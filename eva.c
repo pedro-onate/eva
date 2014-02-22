@@ -1,5 +1,11 @@
+#include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+#include <unistd.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+
 #include "eva.h"
 
 enum Tag {
@@ -8,7 +14,7 @@ enum Tag {
   kBooleanTag   = 0x2, /* 0b010 */
   kIntegerTag   = 0x3, /* 0b011 */
   kSymbolTag    = 0x4, /* 0b100 */
-  kCharacter    = 0x5  /* 0b101 */
+  kCharacterTag = 0x5  /* 0b101 */
 };
 
 struct SymbolTable {char* symbols[65536]; int id;};
@@ -28,7 +34,12 @@ static struct ScmVal* DEFINE, *LAMBDA, *IF, *BEGIN, *QUOTE;
 struct ScmVal*        SCM_NIL, *SCM_FALSE, *SCM_TRUE, *SCM_UNBOUND, *SCM_UNSPECIFIED, *SCM_EOF;
 
 void* (*alloc)(size_t);
+
+static FILE* istream;
 static FILE* ostream;
+
+static struct ScmVal* iport;
+static struct ScmVal* oport;
 
 enum ScmType Scm_type(struct ScmVal* exp) {
   if (!exp) {
@@ -40,7 +51,7 @@ enum ScmType Scm_type(struct ScmVal* exp) {
     case kBooleanTag:   return BOOLEAN;
     case kIntegerTag:   return INTEGER;
     case kSymbolTag:    return SYMBOL;
-    case kCharacter:    return CHARACTER;
+    case kCharacterTag: return CHARACTER;
     default:            return INVALID;
   }
 }
@@ -53,6 +64,10 @@ struct ScmVal* Scm_Boolean_new(int value) {
   return SCM_TAGGED(value, kBooleanTag);
 }
 
+struct ScmVal* Scm_Character_new(int value) {
+  return SCM_TAGGED(value, kCharacterTag);
+}
+
 struct ScmVal* Scm_Symbol_new(char* value) {
   int i;
   for(i = 0; i < symtab.id; i++) {
@@ -63,6 +78,13 @@ struct ScmVal* Scm_Symbol_new(char* value) {
   symtab.symbols[symtab.id] = alloc(strlen(value) + 1);
   strcpy(symtab.symbols[symtab.id], value);
   return SCM_TAGGED(symtab.id++, kSymbolTag);
+}
+
+struct ScmVal* Scm_String_new(char* value) {
+  struct String* string = alloc(sizeof(struct String) + strlen(value) + 1);
+  string->type = STRING;
+  strcpy(string->value, value);
+  return (struct ScmVal*)string;
 }
 
 struct ScmVal* Scm_Pair_new(struct ScmVal* head, struct ScmVal* tail) {
@@ -103,6 +125,38 @@ struct ScmVal* Scm_Closure_new(struct ScmVal* formals, struct ScmVal* body, stru
   closure->body    = body;
   closure->env     = env;
   return (struct ScmVal*)closure;
+}
+
+struct ScmVal* Scm_Port_new(FILE* stream) {
+  struct Port* port = alloc(sizeof(struct Port));
+  port->type   = PORT;
+  port->stream = stream;
+  return (struct ScmVal*)port;
+}
+
+struct ScmVal* Scm_Port_read(struct ScmVal* value) {
+  struct Port* port = (struct Port*)value;
+  return Scm_parse(port->stream);
+}
+
+struct ScmVal* Scm_Port_read_char(struct ScmVal* iport) {
+  struct Port* port;
+  int          c;
+  port = (struct Port*)iport;
+  c    = getc(port->stream);
+  return c == EOF ? SCM_EOF : Scm_Character_new(c);
+}
+
+struct ScmVal* Scm_Port_write_char(struct ScmVal* oport, struct ScmVal* c) {
+  struct Port* port = (struct Port*)oport;
+  fputc(SCM_UNTAG(int, c), port->stream);
+  return SCM_UNSPECIFIED;
+}
+
+struct ScmVal* Scm_Port_write(struct ScmVal* oport, struct ScmVal* obj) {
+  struct Port* port = (struct Port*)oport;
+  Scm_print(port->stream, obj);
+  return SCM_UNSPECIFIED;
 }
 
 static struct ScmVal* bind_args(struct ScmVal* formals, struct ScmVal* args) {
@@ -179,15 +233,36 @@ static struct ScmVal* parse_atom(FILE* stream) {
     *pbuf++ = getc(stream);
     if (strchr("tf", peekc(stream))) {
       return Scm_Boolean_new(getc(stream) == 't');
+    } else if (peekc(stream) == '\\') {
+      getc(stream);
+      return Scm_Character_new(getc(stream));
     } else {
       goto SYMBOL;
     }
-  } else if (isdigit(peekc(stream))) {
+  } else if(peekc(stream) == '"') {
+    getc(stream);
+    while(peekc(stream) != '"'){
+      if (peekc(stream) == '\\') {
+        getc(stream);
+        int c = getc(stream);
+        switch(c) {
+          case 'n': *pbuf++ = '\n';continue;
+          case 'r': *pbuf++ = '\r';continue;
+          case 't': *pbuf++ = '\t';continue;
+          default:  *pbuf++ = c;continue;
+        }
+      }
+      *pbuf++ = getc(stream);
+    }
+    getc(stream);
+    *pbuf = '\0';
+    return Scm_String_new(buf);
+  }else if (isdigit(peekc(stream))) {
     while(isdigit(peekc(stream))) *pbuf++ = getc(stream);
     *pbuf = '\0';
     return Scm_Integer_new(atoi(buf));
   } else {
-    SYMBOL: while(!strchr(" \t\n)", peekc(stream))) *pbuf++ = getc(stream);
+    SYMBOL: while(!strchr(" \t\n\r)", peekc(stream))) *pbuf++ = getc(stream);
     *pbuf = '\0';
     return Scm_Symbol_new(buf);
   };
@@ -221,35 +296,37 @@ struct ScmVal* Scm_parse(FILE* stream) {
   }
 }
 
-static void print_list(struct ScmVal* exp) {
+static void print_list(FILE* ostream, struct ScmVal* exp) {
   struct ScmVal* tail;
-  Scm_print(car(exp));
+  Scm_print(ostream, car(exp));
   tail = cdr(exp);
   if (tail != SCM_NIL) {
     if (Scm_type(tail) == PAIR) {
-      fprintf(ostream, " "); print_list(tail);
+      fprintf(ostream, " "); print_list(ostream, tail);
     } else {
-      fprintf(ostream, " . "); Scm_print(tail);
+      fprintf(ostream, " . "); Scm_print(ostream, tail);
     }
   }
 }
 
-void Scm_print(struct ScmVal* exp) {
+void Scm_print(FILE* ostream, struct ScmVal* exp) {
   if (!exp) {
     return;
   }
   switch(Scm_type(exp)) {
-    case NIL:         fprintf(ostream, "()");                                      break;
-    case INTEGER:     fprintf(ostream, "%ld", SCM_UNTAG(long, exp));               break;
-    case BOOLEAN:     fprintf(ostream, "#%c", exp == SCM_TRUE ? 't' : 'f');        break;
-    case PAIR:        fprintf(ostream, "("); print_list(exp); fprintf(ostream, ")");         break;
-    case SYMBOL:      fprintf(ostream, "%s", symtab.symbols[SCM_UNTAG(int, exp)]); break;
-    case CLOSURE:     fprintf(ostream, "#<closure>");                              break;
-    case PROCEDURE:   fprintf(ostream, "#<procedure>");                            break;
-    case UNSPECIFIED:                                                    break;
-    case UNBOUND:     fprintf(ostream, "#<unbound>");                              break;
-    case EOFILE:      fprintf(ostream, "#<eof>");                                  break;
-    default:          fprintf(ostream, "undefined type");                          break;
+    case NIL:         fprintf(ostream, "()");                                                 break;
+    case INTEGER:     fprintf(ostream, "%ld", SCM_UNTAG(long, exp));                          break;
+    case BOOLEAN:     fprintf(ostream, "#%c", exp == SCM_TRUE ? 't' : 'f');                   break;
+    case SYMBOL:      fprintf(ostream, "%s", symtab.symbols[SCM_UNTAG(int, exp)]);            break;
+    case CLOSURE:     fprintf(ostream, "#<closure>");                                         break;
+    case PROCEDURE:   fprintf(ostream, "#<procedure>");                                       break;
+    case STRING:      fprintf(ostream, "%s", ((struct String*)exp)->value);                   break;
+    case CHARACTER:   fprintf(ostream, "#\\%c", SCM_UNTAG(char, exp));                        break;
+    case UNSPECIFIED:                                                                         break;
+    case UNBOUND:     fprintf(ostream, "#<unbound>");                                         break;
+    case EOF_OBJ:     fprintf(ostream, "#<eof>");                                             break;
+    case PAIR:        fprintf(ostream, "("); print_list(ostream, exp); fprintf(ostream, ")"); break;
+    default:          fprintf(ostream, "undefined type");                                     break;
   }
 }
 
@@ -353,12 +430,31 @@ static struct ScmVal* procedure_eval(struct ScmVal* args) {
 }
 
 static struct ScmVal* procedure_read(struct ScmVal* args) {
-  return Scm_parse(stdin);
+  return Scm_Port_read(args == SCM_NIL ? iport : car(args));
+}
+
+static struct ScmVal* procedure_read_char(struct ScmVal* args) {
+  return Scm_Port_read_char(args == SCM_NIL ? iport : car(args));
+}
+
+static struct ScmVal* procedure_write(struct ScmVal* args) {
+  return Scm_Port_write(cdr(args) == SCM_NIL ? oport : cadr(args), car(args));
+}
+
+static struct ScmVal* procedure_write_char(struct ScmVal* args) {
+  return Scm_Port_write_char(cdr(args) == SCM_NIL ? oport : cadr(args), car(args));
 }
 
 static struct ScmVal* procedure_quit(struct ScmVal* args) {
   exit(0);
   return SCM_EOF;
+}
+
+static struct ScmVal* procedure_socket_connect(struct ScmVal* args) {
+  struct String* host = (struct String*)car(args);
+  struct String* port = (struct String*)cadr(args);
+  int sock_fd = socket_connect(host->value, port->value);
+  return Scm_Port_new(fdopen(sock_fd, "r+"));
 }
 
 #define ALIGN_N(p, n)     (p) % (n) == 0 ? (p) : (p) + ((n) - (p) % (n))
@@ -386,7 +482,7 @@ void Scm_init(size_t heap_size) {
   SCM_TRUE        = Scm_Boolean_new(1);
   SCM_UNBOUND     = SCM_TAGGED(UNBOUND, kImmediateTag);
   SCM_UNSPECIFIED = SCM_TAGGED(UNSPECIFIED, kImmediateTag);
-  SCM_EOF         = SCM_TAGGED(EOFILE, kImmediateTag);
+  SCM_EOF         = SCM_TAGGED(EOF_OBJ, kImmediateTag);
   env             = Scm_Env_new(SCM_NIL, SCM_NIL, SCM_NIL);
 
   Scm_define_symbol(env, Scm_Symbol_new("+"), Scm_Procedure_new(procedure_add));
@@ -397,163 +493,160 @@ void Scm_init(size_t heap_size) {
   Scm_define_symbol(env, Scm_Symbol_new("cdr"), Scm_Procedure_new(procedure_cdr));
   Scm_define_symbol(env, Scm_Symbol_new("eval"), Scm_Procedure_new(procedure_eval));
   Scm_define_symbol(env, Scm_Symbol_new("read"), Scm_Procedure_new(procedure_read));
+  Scm_define_symbol(env, Scm_Symbol_new("read-char"), Scm_Procedure_new(procedure_read_char));
+  Scm_define_symbol(env, Scm_Symbol_new("write"), Scm_Procedure_new(procedure_write));
+  Scm_define_symbol(env, Scm_Symbol_new("write-char"), Scm_Procedure_new(procedure_write_char));
   Scm_define_symbol(env, Scm_Symbol_new("quit"), Scm_Procedure_new(procedure_quit));
+  Scm_define_symbol(env, Scm_Symbol_new("socket-connect"), Scm_Procedure_new(procedure_socket_connect));
 }
 
+#define BACKLOG 10     // how many pending connections queue will hold
+
 /*
-int main() {
+void sigchld_handler(int s) {
+  while(waitpid(-1, NULL, WNOHANG) > 0);
+}
+*/
+
+// get sockaddr, IPv4 or IPv6:
+void* get_in_addr(struct sockaddr *sa) {
+  if (sa->sa_family == AF_INET) {
+    return &(((struct sockaddr_in*)sa)->sin_addr);
+  }
+  return &(((struct sockaddr_in6*)sa)->sin6_addr);
+}
+
+int socket_listen(char* port) {
+  int sockfd;
+  struct addrinfo hints, *servinfo, *p;
+  struct sigaction sa;
+  int yes=1;
+  int rv;
+  memset(&hints, 0, sizeof hints);
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_flags = AI_PASSIVE; // use my IP
+  if ((rv = getaddrinfo(NULL, port, &hints, &servinfo)) != 0) {
+      fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
+      return -1;
+  }
+  // loop through all the results and bind to the first we can
+  for(p = servinfo; p != NULL; p = p->ai_next) {
+      if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
+          perror("server: socket");
+          continue;
+      }
+      if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1) {
+          perror("setsockopt");
+          return -1;
+      }
+      if (bind(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
+          close(sockfd);
+          perror("server: bind");
+          continue;
+      }
+      break;
+  }
+  if (p == NULL)  {
+      fprintf(stderr, "server: failed to bind\n");
+      return -1;
+  }
+  freeaddrinfo(servinfo); // all done with this structure
+  if (listen(sockfd, BACKLOG) == -1) {
+      perror("listen");
+      return -1;
+  }
+  /*sa.sa_handler = sigchld_handler; // reap all dead processes
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = SA_RESTART;
+  if (sigaction(SIGCHLD, &sa, NULL) == -1) {
+      perror("sigaction");
+      return -1;
+  }*/  
+  return sockfd;
+}
+
+int socket_accept(int sockfd) {
+  int new_fd;
+  struct sockaddr_storage their_addr; // connector's address information
+  socklen_t sin_size;
+  char s[INET6_ADDRSTRLEN];
+  printf("server: waiting for connections...\n");
+  sin_size = sizeof their_addr;
+  new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
+  if (new_fd == -1) {
+    return -1;
+  }
+  inet_ntop(their_addr.ss_family, get_in_addr((struct sockaddr *)&their_addr), s, sizeof s);
+  printf("server: got connection from %s\n", s);
+  return new_fd;
+}
+
+int socket_connect(char* host, char* port) {
+  int sockfd;
+  struct addrinfo hints, *servinfo, *p;
+  int rv;
+  char s[INET6_ADDRSTRLEN];
+  memset(&hints, 0, sizeof hints);
+  hints.ai_family   = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  if ((rv = getaddrinfo(host, port, &hints, &servinfo)) != 0) {
+    fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
+    return -1;
+  }
+  // loop through all the results and connect to the first we can
+  for(p = servinfo; p != NULL; p = p->ai_next) {
+    if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
+      perror("client: socket");
+      continue;
+    }
+    if (connect(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
+      close(sockfd);
+      perror("client: connect");
+      continue;
+    }
+    break;
+  }
+  if (p == NULL) {
+    fprintf(stderr, "client: failed to connect\n");
+    return -1;
+  }
+  inet_ntop(p->ai_family, get_in_addr((struct sockaddr *)p->ai_addr), s, sizeof s);
+  printf("client: connecting to %s\n", s);
+  freeaddrinfo(servinfo); // all done with this structure
+  return sockfd;
+}
+
+int main(int argc, char* argv[]) {
+#ifdef SOCKET
+  int listen_fd = socket_listen("1234");
+  int client_fd = socket_accept(listen_fd);
+
+  FILE* iostream = fdopen(client_fd, "r+");
+
+  ostream = iostream;
+  istream = iostream;
+#else
+  ostream = stdout;
+  istream = stdin;
+#endif
+
+  Scm_init(2 << 29);
+
+  iport = Scm_Port_new(istream);
+  oport = Scm_Port_new(ostream);
+
   fprintf(ostream, ".------------------.\n");
   fprintf(ostream, "|  EvaScheme v0.1  |\n");
   fprintf(ostream, "'------------------'\n\n");
 
-  Scm_init(2 << 29);
-
-  while (true) {
+  while (1) {
     fprintf(ostream, "eva> ");
-    Scm_print(Scm_eval(Scm_parse(stdin), env));
+    //Scm_print(ostream, Scm_eval(Scm_parse(istream), env));
+
+    Scm_Port_write(oport, Scm_eval(Scm_Port_read(iport), env));
+
+    //Scm_print
     fprintf(ostream, "\n"); 
   }
-}
-*/
-
-/*
-** server.c -- a stream socket server demo
-*/
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <errno.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netdb.h>
-#include <arpa/inet.h>
-#include <sys/wait.h>
-#include <signal.h>
-
-#define PORT "3490"  // the port users will be connecting to
-
-#define BACKLOG 10     // how many pending connections queue will hold
-
-void sigchld_handler(int s)
-{
-    while(waitpid(-1, NULL, WNOHANG) > 0);
-}
-
-// get sockaddr, IPv4 or IPv6:
-void *get_in_addr(struct sockaddr *sa)
-{
-    if (sa->sa_family == AF_INET) {
-        return &(((struct sockaddr_in*)sa)->sin_addr);
-    }
-
-    return &(((struct sockaddr_in6*)sa)->sin6_addr);
-}
-
-int main(void)
-{
-    int sockfd, new_fd;  // listen on sock_fd, new connection on new_fd
-    struct addrinfo hints, *servinfo, *p;
-    struct sockaddr_storage their_addr; // connector's address information
-    socklen_t sin_size;
-    struct sigaction sa;
-    int yes=1;
-    char s[INET6_ADDRSTRLEN];
-    int rv;
-
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE; // use my IP
-
-    if ((rv = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) {
-        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
-        return 1;
-    }
-
-    // loop through all the results and bind to the first we can
-    for(p = servinfo; p != NULL; p = p->ai_next) {
-        if ((sockfd = socket(p->ai_family, p->ai_socktype,
-                p->ai_protocol)) == -1) {
-            perror("server: socket");
-            continue;
-        }
-
-        if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes,
-                sizeof(int)) == -1) {
-            perror("setsockopt");
-            exit(1);
-        }
-
-        if (bind(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
-            close(sockfd);
-            perror("server: bind");
-            continue;
-        }
-
-        break;
-    }
-
-    if (p == NULL)  {
-        fprintf(stderr, "server: failed to bind\n");
-        return 2;
-    }
-
-    freeaddrinfo(servinfo); // all done with this structure
-
-    if (listen(sockfd, BACKLOG) == -1) {
-        perror("listen");
-        exit(1);
-    }
-
-    sa.sa_handler = sigchld_handler; // reap all dead processes
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;
-    if (sigaction(SIGCHLD, &sa, NULL) == -1) {
-        perror("sigaction");
-        exit(1);
-    }
-
-    printf("server: waiting for connections...\n");
-
-    while(1) {  // main accept() loop
-        sin_size = sizeof their_addr;
-        new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
-        if (new_fd == -1) {
-            perror("accept");
-            continue;
-        }
-
-        inet_ntop(their_addr.ss_family,
-            get_in_addr((struct sockaddr *)&their_addr),
-            s, sizeof s);
-        printf("server: got connection from %s\n", s);
-
-        if (!fork()) { // this is the child process
-          close(sockfd); // child doesn't need the listener
-          /*if (send(new_fd, "Hello, world!", 13, 0) == -1)
-              perror("send");
-          close(new_fd);
-          exit(0);*/
-          FILE* iostream = fdopen(new_fd, "r+");
-          ostream = iostream;
-
-          fprintf(ostream, ".------------------.\n");
-          fprintf(ostream, "|  EvaScheme v0.1  |\n");
-          fprintf(ostream, "'------------------'\n\n");
-
-          Scm_init(2 << 29);
-
-          while (true) {
-            fprintf(ostream, "eva> ");
-            Scm_print(Scm_eval(Scm_parse(iostream), env));
-            fprintf(ostream, "\n"); 
-          }
-        }
-        close(new_fd);  // parent doesn't need this
-    }
-
-    return 0;
 }

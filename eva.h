@@ -5,12 +5,6 @@
 #ifndef EVASCHEME_H
 #define EVASCHEME_H
 
-#include <stdlib.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <inttypes.h>
-
 #ifdef __cplusplus
   extern "C" {
 #endif
@@ -34,7 +28,8 @@ enum ScmType {
   PROCEDURE,
   UNBOUND,
   UNSPECIFIED,
-  EOFILE,
+  EOF_OBJ,
+  PORT,
   INVALID
 };
 
@@ -60,6 +55,15 @@ struct Procedure {
   struct ScmVal* (*fptr)(struct ScmVal*);
 };
 
+struct String {
+  enum ScmType type;
+  char         value[];
+};
+
+struct Port {
+  enum ScmType type;
+  FILE*        stream;
+};
 
 void Scm_init(size_t heap_size);
 enum ScmType Scm_type(struct ScmVal* exp);
@@ -85,14 +89,23 @@ void Scm_Pair_set_tail(struct ScmVal* cons, struct ScmVal* value);
 struct ScmVal* Scm_Integer_new(long value);
 struct ScmVal* Scm_Symbol_new(char* symbol);
 struct ScmVal* Scm_String_new(char* value);
+struct ScmVal* Scm_Character_new(int c);
+struct ScmVal* Scm_Port_new(FILE* stream);
+struct ScmVal* Scm_Port_read_char(struct ScmVal* port);
+struct ScmVal* Scm_Port_write_char(struct ScmVal* port, struct ScmVal* c);
+struct ScmVal* Scm_Port_write(struct ScmVal* port, struct ScmVal* obj);
+struct ScmVal* Scm_Port_read(struct ScmVal* port);
 struct ScmVal* Scm_Closure_new(struct ScmVal* formals, struct ScmVal* body, struct ScmVal* env);
 struct ScmVal* Scm_Procedure_new(struct ScmVal* (*fptr)(struct ScmVal*));
-struct ScmVal* Scm_parse(FILE* stream);
-void Scm_print(struct ScmVal* exp);
+struct ScmVal* Scm_parse(FILE* istream);
+void Scm_print(FILE* ostream, struct ScmVal* exp);
 struct ScmVal* Scm_eval(struct ScmVal* exp, struct ScmVal* env);
 struct ScmVal* Scm_Env_new(struct ScmVal* formals, struct ScmVal* args, struct ScmVal* parent);
 struct ScmVal* Scm_Env_define_symbol(struct ScmVal* env, struct ScmVal* symbol, struct ScmVal* value);
 struct ScmVal* Scm_Env_lookup_symbol(struct ScmVal* env, struct ScmVal* symbol);
+int socket_connect(char* host, char* port);
+int socket_listen(char* port);
+int socket_accept(int fd);
 
 #ifdef __cplusplus
   }
