@@ -5,27 +5,29 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <sys/time.h>
 
 #include "eva.h"
 
 enum Tag {
   kReferenceTag = 0x0, /* 0b000 */
-  kImmediateTag = 0x1, /* 0b001 */
-  kBooleanTag   = 0x2, /* 0b010 */
-  kIntegerTag   = 0x3, /* 0b011 */
-  kSymbolTag    = 0x4, /* 0b100 */
-  kCharacterTag = 0x5  /* 0b101 */
+  kPairTag      = 0x1, /* 0b001 */
+  kImmediateTag = 0x2, /* 0b010 */
+  kBooleanTag   = 0x3, /* 0b011 */
+  kIntegerTag   = 0x4, /* 0b100 */
+  kSymbolTag    = 0x5, /* 0b101 */
+  kCharacterTag = 0x6  /* 0b110 */
 };
 
 struct SymbolTable {char* symbols[65536]; int id;};
-struct Heap {void* buffer; void* ptr;};
+struct Heap {char* buffer; int size; char* ptr;};
 
 #define SCM_TAG_BITS        3
 #define SCM_TAG_MASK        0x7
 #define SCM_PTR_BITS(ptr)   (intptr_t)(ptr)
 #define SCM_GET_TAG(ptr)    SCM_PTR_BITS(ptr) & SCM_TAG_MASK
 #define SCM_TAGGED(v, t)    (struct ScmVal*)(SCM_PTR_BITS(v) << SCM_TAG_BITS | t)
-#define SCM_UNTAG(t, v)     (t)(SCM_PTR_BITS(v) >> SCM_TAG_BITS)
+#define SCM_UNTAG(t, v)     ((t)(SCM_PTR_BITS(v) >> SCM_TAG_BITS))
 
 static struct ScmVal* env;
 static struct Heap heap;
@@ -47,6 +49,7 @@ enum ScmType Scm_type(struct ScmVal* exp) {
   }
   switch(SCM_GET_TAG(exp)) {
     case kReferenceTag: return exp->type;
+    case kPairTag:      return PAIR;
     case kImmediateTag: return SCM_UNTAG(int, exp);
     case kBooleanTag:   return BOOLEAN;
     case kIntegerTag:   return INTEGER;
@@ -75,7 +78,7 @@ struct ScmVal* Scm_Symbol_new(char* value) {
       return SCM_TAGGED(i, kSymbolTag);
     }
   }
-  symtab.symbols[symtab.id] = alloc(strlen(value) + 1);
+  symtab.symbols[symtab.id] = malloc(strlen(value) + 1);
   strcpy(symtab.symbols[symtab.id], value);
   return SCM_TAGGED(symtab.id++, kSymbolTag);
 }
@@ -88,27 +91,26 @@ struct ScmVal* Scm_String_new(char* value) {
 }
 
 struct ScmVal* Scm_Pair_new(struct ScmVal* head, struct ScmVal* tail) {
-  struct Pair* cons_cell = alloc(sizeof(struct Pair));
-  cons_cell->type = PAIR;
-  cons_cell->head = head;
-  cons_cell->tail = tail;
-  return (struct ScmVal*)cons_cell;
+  struct Pair* pair = alloc(sizeof(struct Pair));
+  pair->head = head;
+  pair->tail = tail;
+  return SCM_TAGGED(pair, kPairTag);
 }
 
-struct ScmVal* Scm_Pair_car(struct ScmVal* cons_cell) {
-  return ((struct Pair*)cons_cell)->head;
+struct ScmVal* Scm_Pair_car(struct ScmVal* pair) {
+  return SCM_UNTAG(struct Pair*, pair)->head;
 }
 
-struct ScmVal* Scm_Pair_cdr(struct ScmVal* cons_cell) {
-  return ((struct Pair*)cons_cell)->tail;
+struct ScmVal* Scm_Pair_cdr(struct ScmVal* pair) {
+  return SCM_UNTAG(struct Pair*, pair)->tail;
 }
 
 void Scm_Pair_set_head(struct ScmVal* pair, struct ScmVal* value) {
-  ((struct Pair*)pair)->head = value;
+  SCM_UNTAG(struct Pair*, pair)->head = value;
 }
 
 void Scm_Pair_set_tail(struct ScmVal* pair, struct ScmVal* value) {
-  ((struct Pair*)pair)->tail = value;
+  SCM_UNTAG(struct Pair*, pair)->tail = value;
 }
 
 struct ScmVal* Scm_Procedure_new(struct ScmVal* (*fptr)(struct ScmVal*)) {
@@ -501,17 +503,31 @@ static struct ScmVal* procedure_not(struct ScmVal* args) {
   return Scm_Boolean_new(car(args) == SCM_FALSE);
 }
 
-#define ALIGN_N(p, n)     (p) % (n) == 0 ? (p) : (p) + ((n) - (p) % (n))
+static struct ScmVal* procedure_time_ms(struct ScmVal* args) {
+  struct timeval tp;
+  gettimeofday(&tp, NULL);
+  return Scm_Integer_new(tp.tv_sec * 1000 + tp.tv_usec / 10000);
+}
+
+
+//#define ALIGN_N(p, n)     (p) % (n) == 0 ? (p) : (p) + ((n) - (p) % (n))
+#define ALIGN_N(p, n)     ((((uintptr_t)p) + (n - 1)) & -n)
 #define DEFAULT_ALIGNMENT 8
 
-static void* bump_allocator(size_t sz) {
+static void* bump_allocator(size_t size) {
   uintptr_t block;
-  block    = ALIGN_N((uintptr_t)heap.ptr, 8);
-  heap.ptr = (void*)(block + sz);
+  block    = ALIGN_N(heap.ptr, 8);
+  heap.ptr = (char*)(block + size);
+
+  //if (heap.ptr >= (char*)heap.buffer + heap.size) {
+  //  fprintf(stderr, "OUT OF MEMORY\n");
+  //  exit(1);
+  //}
   return (void*)block;
 }
 
 void Scm_init(size_t heap_size) {
+  heap.size       = heap_size;
   heap.buffer     = malloc(heap_size);
   heap.ptr        = heap.buffer;
 
@@ -548,6 +564,7 @@ void Scm_init(size_t heap_size) {
   Scm_define_symbol(env, Scm_Symbol_new("accept"), Scm_Procedure_new(procedure_socket_accept));
   Scm_define_symbol(env, Scm_Symbol_new("close"), Scm_Procedure_new(procedure_close));
   Scm_define_symbol(env, Scm_Symbol_new("not"), Scm_Procedure_new(procedure_not));
+  Scm_define_symbol(env, Scm_Symbol_new("time-ms"), Scm_Procedure_new(procedure_time_ms));
 }
 
 #define BACKLOG 10     // how many pending connections queue will hold

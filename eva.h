@@ -38,7 +38,6 @@ struct ScmVal {
 };
 
 struct Pair {
-  enum ScmType   type;
   struct ScmVal* head;
   struct ScmVal* tail;
 };
