@@ -127,6 +127,10 @@ struct ScmVal* Scm_Closure_new(struct ScmVal* formals, struct ScmVal* body, stru
   return (struct ScmVal*)closure;
 }
 
+static int peekc(FILE* stream) {
+  return ungetc(getc(stream), stream);
+}
+
 struct ScmVal* Scm_Port_new(FILE* stream) {
   struct Port* port = alloc(sizeof(struct Port));
   port->type   = PORT;
@@ -147,6 +151,12 @@ struct ScmVal* Scm_Port_read_char(struct ScmVal* iport) {
   return c == EOF ? SCM_EOF : Scm_Character_new(c);
 }
 
+struct ScmVal* Scm_Port_peek_char(struct ScmVal* iport) {
+  struct Port* port = (struct Port*)iport;
+  int c = peekc(port->stream);
+  return c == EOF ? SCM_EOF : Scm_Character_new(c);
+}
+
 struct ScmVal* Scm_Port_write_char(struct ScmVal* oport, struct ScmVal* c) {
   struct Port* port = (struct Port*)oport;
   fputc(SCM_UNTAG(int, c), port->stream);
@@ -157,6 +167,10 @@ struct ScmVal* Scm_Port_write(struct ScmVal* oport, struct ScmVal* obj) {
   struct Port* port = (struct Port*)oport;
   Scm_print(port->stream, obj);
   return SCM_UNSPECIFIED;
+}
+
+struct ScmVal* Scm_is_eof_obj(struct ScmVal* obj) {
+  return Scm_Boolean_new(obj == SCM_EOF);
 }
 
 static struct ScmVal* bind_args(struct ScmVal* formals, struct ScmVal* args) {
@@ -218,24 +232,27 @@ struct ScmVal* Scm_lookup_symbol(struct ScmVal* env, struct ScmVal* symbol) {
   return binding ? cdr(binding) : SCM_UNBOUND;
 }
 
-static int peekc(FILE* stream) {
-  int c;
-  c = getc(stream);
-  ungetc(c, stream); 
-  return c;
-}
-
 static struct ScmVal* parse_atom(FILE* stream) {
   char  buf[1028] = "\0";
   char  *pbuf     = buf;
   while(isspace(peekc(stream))) getc(stream);
-  if (peekc(stream) == '#') {
+  if (peekc(stream) == EOF) {
+    return SCM_EOF;
+  } else if (peekc(stream) == '#') {
     *pbuf++ = getc(stream);
     if (strchr("tf", peekc(stream))) {
       return Scm_Boolean_new(getc(stream) == 't');
     } else if (peekc(stream) == '\\') {
       getc(stream);
-      return Scm_Character_new(getc(stream));
+      while(!strchr(" \t\n\r)", peekc(stream))) *pbuf++ = getc(stream);
+      *pbuf = '\0';
+      if (strcmp("space", buf+1) == 0) {
+        return Scm_Character_new(' ');
+      } else if (strcmp("newline", buf+1) == 0) {
+        return Scm_Character_new('\n');
+      } else {
+        return Scm_Character_new(buf[1]);
+      }
     } else {
       goto SYMBOL;
     }
@@ -285,7 +302,6 @@ static struct ScmVal* parse_list(FILE* stream) {
 }
 
 struct ScmVal* Scm_parse(FILE* stream) {
-  if (!stream || peekc(stream) == EOF) {return SCM_EOF;}
   while(isspace(peekc(stream))) getc(stream);
   if (peekc(stream) == '(' && getc(stream)) {
     return parse_list(stream);
@@ -340,10 +356,10 @@ static struct ScmVal* eval_args(struct ScmVal* args, struct ScmVal* env) {
 
 struct ScmVal* Scm_eval(struct ScmVal* exp, struct ScmVal* env) {
   int               type;
-  struct ScmVal*    op;
-  struct ScmVal*    res;
-  struct Procedure* cfunc;
-  struct Closure*   closure;
+  struct ScmVal*    op      = NULL;
+  struct ScmVal*    res     = NULL;
+  struct Procedure* cfunc   = NULL;
+  struct Closure*   closure = NULL;
 
   EVAL:;
   type = Scm_type(exp);
@@ -437,6 +453,10 @@ static struct ScmVal* procedure_read_char(struct ScmVal* args) {
   return Scm_Port_read_char(args == SCM_NIL ? iport : car(args));
 }
 
+static struct ScmVal* procedure_peek_char(struct ScmVal* args) {
+  return Scm_Port_peek_char(args == SCM_NIL ? iport : car(args));
+}
+
 static struct ScmVal* procedure_write(struct ScmVal* args) {
   return Scm_Port_write(cdr(args) == SCM_NIL ? oport : cadr(args), car(args));
 }
@@ -450,11 +470,35 @@ static struct ScmVal* procedure_quit(struct ScmVal* args) {
   return SCM_EOF;
 }
 
+static struct ScmVal* procedure_socket_listen(struct ScmVal* args) {
+  struct String* port = (struct String*)car(args);
+  return Scm_Integer_new(socket_listen(port->value));
+}
+
+static struct ScmVal* procedure_socket_accept(struct ScmVal* args) {
+  return Scm_Port_new(fdopen(socket_accept(SCM_UNTAG(int, car(args))), "r+"));
+}
+
 static struct ScmVal* procedure_socket_connect(struct ScmVal* args) {
   struct String* host = (struct String*)car(args);
   struct String* port = (struct String*)cadr(args);
   int sock_fd = socket_connect(host->value, port->value);
   return Scm_Port_new(fdopen(sock_fd, "r+"));
+}
+
+static struct ScmVal* procedure_is_eof_obj(struct ScmVal* args) {
+  return Scm_is_eof_obj(car(args));
+}
+
+static struct ScmVal* procedure_close(struct ScmVal* args) {
+  struct Port* port = (struct Port*)car(args);
+  fclose(port->stream);
+  port->stream = NULL;
+  return SCM_UNSPECIFIED;
+}
+
+static struct ScmVal* procedure_not(struct ScmVal* args) {
+  return Scm_Boolean_new(car(args) == SCM_FALSE);
 }
 
 #define ALIGN_N(p, n)     (p) % (n) == 0 ? (p) : (p) + ((n) - (p) % (n))
@@ -494,10 +538,16 @@ void Scm_init(size_t heap_size) {
   Scm_define_symbol(env, Scm_Symbol_new("eval"), Scm_Procedure_new(procedure_eval));
   Scm_define_symbol(env, Scm_Symbol_new("read"), Scm_Procedure_new(procedure_read));
   Scm_define_symbol(env, Scm_Symbol_new("read-char"), Scm_Procedure_new(procedure_read_char));
+  Scm_define_symbol(env, Scm_Symbol_new("peek-char"), Scm_Procedure_new(procedure_peek_char));
+  Scm_define_symbol(env, Scm_Symbol_new("eof-obj?"), Scm_Procedure_new(procedure_is_eof_obj));
   Scm_define_symbol(env, Scm_Symbol_new("write"), Scm_Procedure_new(procedure_write));
   Scm_define_symbol(env, Scm_Symbol_new("write-char"), Scm_Procedure_new(procedure_write_char));
   Scm_define_symbol(env, Scm_Symbol_new("quit"), Scm_Procedure_new(procedure_quit));
-  Scm_define_symbol(env, Scm_Symbol_new("socket-connect"), Scm_Procedure_new(procedure_socket_connect));
+  Scm_define_symbol(env, Scm_Symbol_new("connect"), Scm_Procedure_new(procedure_socket_connect));
+  Scm_define_symbol(env, Scm_Symbol_new("listen"), Scm_Procedure_new(procedure_socket_listen));
+  Scm_define_symbol(env, Scm_Symbol_new("accept"), Scm_Procedure_new(procedure_socket_accept));
+  Scm_define_symbol(env, Scm_Symbol_new("close"), Scm_Procedure_new(procedure_close));
+  Scm_define_symbol(env, Scm_Symbol_new("not"), Scm_Procedure_new(procedure_not));
 }
 
 #define BACKLOG 10     // how many pending connections queue will hold
@@ -631,7 +681,7 @@ int main(int argc, char* argv[]) {
   istream = stdin;
 #endif
 
-  Scm_init(2 << 29);
+  Scm_init(2 << 27);
 
   iport = Scm_Port_new(istream);
   oport = Scm_Port_new(ostream);
@@ -640,13 +690,19 @@ int main(int argc, char* argv[]) {
   fprintf(ostream, "|  EvaScheme v0.1  |\n");
   fprintf(ostream, "'------------------'\n\n");
 
-  while (1) {
+  struct ScmVal* exp;
+  struct ScmVal* res;
+
+  do {
     fprintf(ostream, "eva> ");
     //Scm_print(ostream, Scm_eval(Scm_parse(istream), env));
 
-    Scm_Port_write(oport, Scm_eval(Scm_Port_read(iport), env));
+    exp = Scm_Port_read(iport);
 
-    //Scm_print
-    fprintf(ostream, "\n"); 
-  }
+    if (exp != SCM_EOF) {
+      res = Scm_eval(exp, env);
+      Scm_Port_write(oport, res);
+      fprintf(ostream, "\n"); 
+    }
+  } while(exp != SCM_EOF);
 }
