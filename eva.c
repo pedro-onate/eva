@@ -68,37 +68,37 @@ struct ScmVal* Scm_Symbol_new(char* value) {
 }
 
 struct ScmVal* Scm_Pair_new(struct ScmVal* head, struct ScmVal* tail) {
-  struct Pair* pair = alloc(sizeof(struct Pair));
+  struct ScmPair* pair = alloc(sizeof(struct ScmPair));
   pair->head = head;
   pair->tail = tail;
   return SCM_TAGGED(pair, kPairTag);
 }
 
 struct ScmVal* Scm_Pair_car(struct ScmVal* pair) {
-  return SCM_UNTAG(struct Pair*, pair)->head;
+  return SCM_UNTAG(struct ScmPair*, pair)->head;
 }
 
 struct ScmVal* Scm_Pair_cdr(struct ScmVal* pair) {
-  return SCM_UNTAG(struct Pair*, pair)->tail;
+  return SCM_UNTAG(struct ScmPair*, pair)->tail;
 }
 
 void Scm_Pair_set_head(struct ScmVal* pair, struct ScmVal* value) {
-  SCM_UNTAG(struct Pair*, pair)->head = value;
+  SCM_UNTAG(struct ScmPair*, pair)->head = value;
 }
 
 void Scm_Pair_set_tail(struct ScmVal* pair, struct ScmVal* value) {
-  SCM_UNTAG(struct Pair*, pair)->tail = value;
+  SCM_UNTAG(struct ScmPair*, pair)->tail = value;
 }
 
 struct ScmVal* Scm_Procedure_new(struct ScmVal* (*fptr)(struct ScmVal*)) {
-  struct Procedure* cfunc = alloc(sizeof(struct Procedure));
+  struct ScmProcedure* cfunc = alloc(sizeof(struct ScmProcedure));
   cfunc->type  = PROCEDURE;
   cfunc->fptr  = fptr;
   return (struct ScmVal*)cfunc;
 }
 
 struct ScmVal* Scm_Closure_new(struct ScmVal* formals, struct ScmVal* body, struct ScmVal* env) {
-  struct Closure* closure = alloc(sizeof(struct Closure));
+  struct ScmClosure* closure = alloc(sizeof(struct ScmClosure));
   closure->type    = CLOSURE;
   closure->formals = formals;
   closure->body    = body;
@@ -266,8 +266,8 @@ struct ScmVal* Scm_eval(struct ScmVal* exp, struct ScmVal* env) {
   int               type;
   struct ScmVal*    op;
   struct ScmVal*    res;
-  struct Procedure* cfunc;
-  struct Closure*   closure;
+  struct ScmProcedure* cfunc;
+  struct ScmClosure*   closure;
 
   EVAL:;
   type = Scm_type(exp);
@@ -302,10 +302,10 @@ struct ScmVal* Scm_eval(struct ScmVal* exp, struct ScmVal* env) {
       op = Scm_eval(op, env);
       type = Scm_type(op);
       if (type == PROCEDURE) {
-        cfunc = (struct Procedure*)op;
+        cfunc = (struct ScmProcedure*)op;
         return cfunc->fptr(eval_args(cdr(exp), env));
       } else if (type == CLOSURE) {
-        closure = (struct Closure*)op;
+        closure = (struct ScmClosure*)op;
         env = Scm_Env_new(closure->formals, eval_args(cdr(exp), env), closure->env);
         exp = closure->body;
         goto EVAL_SEQ;

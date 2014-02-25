@@ -42,19 +42,23 @@ struct ScmVal {
   enum ScmType type;
 };
 
-struct Pair {
+struct ScmObj {
+  enum ScmType type;
+};
+
+struct ScmPair {
   struct ScmVal* head;
   struct ScmVal* tail;
 };
 
-struct Closure {
+struct ScmClosure {
   enum ScmType   type;
   struct ScmVal* formals;
   struct ScmVal* body;
   struct ScmVal* env;
 };
 
-struct Procedure {
+struct ScmProcedure {
   enum ScmType   type;
   struct ScmVal* (*fptr)(struct ScmVal*);
 };
