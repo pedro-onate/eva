@@ -3,8 +3,29 @@
 #include <sys/time.h>
 #include "eva.h"
 
+struct ScmObj {
+  enum ScmType type;
+};
+
+struct ScmPair {
+  ScmVal head;
+  ScmVal tail;
+};
+
+struct ScmClosure {
+  enum ScmType   type;
+  ScmVal formals;
+  ScmVal body;
+  ScmVal env;
+};
+
+struct ScmProcedure {
+  enum ScmType   type;
+  ScmVal (*fptr)(ScmVal);
+};
+
 enum Tag {
-  kReferenceTag = 0x0, /* 0b000 */
+  kObjectTag    = 0x0, /* 0b000 */
   kPairTag      = 0x1, /* 0b001 */
   kImmediateTag = 0x2, /* 0b010 */
   kBooleanTag   = 0x3, /* 0b011 */
@@ -20,25 +41,31 @@ struct Heap {char* buffer; int size; char* ptr;};
 #define SCM_TAG_MASK        0x7
 #define SCM_PTR_BITS(ptr)   (intptr_t)(ptr)
 #define SCM_GET_TAG(ptr)    SCM_PTR_BITS(ptr) & SCM_TAG_MASK
-#define SCM_TAGGED(v, t)    (struct ScmVal*)(SCM_PTR_BITS(v) << SCM_TAG_BITS | t)
+#define SCM_TAGGED(v, t)    (ScmVal)(SCM_PTR_BITS(v) << SCM_TAG_BITS | t)
 #define SCM_UNTAG(t, v)     ((t)(SCM_PTR_BITS(v) >> SCM_TAG_BITS))
 
-static struct ScmVal* env;
+#define SCM_PAIR2VAL(pair)  ((ScmVal)((uintptr_t)pair | kPairTag))
+#define SCM_VAL2PAIR(val)   ((struct ScmPair*)(val & ~SCM_TAG_MASK))
+#define SCM_OBJ2VAL(obj)    ((ScmVal)((uintptr_t)obj | kObjectTag))
+#define SCM_VAL2OBJ(val)    ((struct ScmObj*)val)
+
+static ScmVal env;
 static struct Heap heap;
 static struct SymbolTable symtab;
-static struct ScmVal* DEFINE, *LAMBDA, *IF, *BEGIN, *QUOTE;
-struct ScmVal*        SCM_NIL, *SCM_FALSE, *SCM_TRUE, *SCM_UNBOUND, *SCM_UNSPECIFIED, *SCM_EOF;
+static ScmVal DEFINE, LAMBDA, IF, BEGIN, QUOTE;
+ScmVal        SCM_NIL, SCM_FALSE, SCM_TRUE, SCM_UNBOUND, SCM_UNSPECIFIED, SCM_EOF;
 
-void* (*alloc)(size_t); 
+void* (*alloc)(size_t);
 
-enum ScmType Scm_type(struct ScmVal* exp) {
-  if (!exp) {
-    return INVALID;
-  }
-  switch(SCM_GET_TAG(exp)) {
-    case kReferenceTag: return exp->type;
+static enum ScmType Scm_Obj_type(struct ScmObj* obj) {
+  return INVALID;
+}
+
+enum ScmType Scm_type(ScmVal value) {
+  switch(SCM_GET_TAG(value)) {
+    case kObjectTag:    return SCM_VAL2OBJ(value)->type;
     case kPairTag:      return PAIR;
-    case kImmediateTag: return SCM_UNTAG(int, exp);
+    case kImmediateTag: return SCM_UNTAG(enum ScmType, value);
     case kBooleanTag:   return BOOLEAN;
     case kIntegerTag:   return INTEGER;
     case kSymbolTag:    return SYMBOL;
@@ -47,15 +74,15 @@ enum ScmType Scm_type(struct ScmVal* exp) {
   }
 }
 
-struct ScmVal* Scm_Integer_new(long value) {
+ScmVal Scm_Integer_new(long value) {
   return SCM_TAGGED(value, kIntegerTag);
 }
 
-struct ScmVal* Scm_Boolean_new(int value) {
+ScmVal Scm_Boolean_new(int value) {
   return SCM_TAGGED(value, kBooleanTag);
 }
 
-struct ScmVal* Scm_Symbol_new(char* value) {
+ScmVal Scm_Symbol_new(char* value) {
   int i;
   for(i = 0; i < symtab.id; i++) {
     if (strcmp(symtab.symbols[i], value) == 0) {
@@ -67,46 +94,46 @@ struct ScmVal* Scm_Symbol_new(char* value) {
   return SCM_TAGGED(symtab.id++, kSymbolTag);
 }
 
-struct ScmVal* Scm_Pair_new(struct ScmVal* head, struct ScmVal* tail) {
+ScmVal Scm_Pair_new(ScmVal head, ScmVal tail) {
   struct ScmPair* pair = alloc(sizeof(struct ScmPair));
   pair->head = head;
   pair->tail = tail;
-  return SCM_TAGGED(pair, kPairTag);
+  return SCM_PAIR2VAL(pair);
 }
 
-struct ScmVal* Scm_Pair_car(struct ScmVal* pair) {
-  return SCM_UNTAG(struct ScmPair*, pair)->head;
+ScmVal Scm_Pair_car(ScmVal pair) {
+  return SCM_VAL2PAIR(pair)->head;
 }
 
-struct ScmVal* Scm_Pair_cdr(struct ScmVal* pair) {
-  return SCM_UNTAG(struct ScmPair*, pair)->tail;
+ScmVal Scm_Pair_cdr(ScmVal pair) {
+  return SCM_VAL2PAIR(pair)->tail;
 }
 
-void Scm_Pair_set_head(struct ScmVal* pair, struct ScmVal* value) {
-  SCM_UNTAG(struct ScmPair*, pair)->head = value;
+void Scm_Pair_set_head(ScmVal pair, ScmVal value) {
+  SCM_VAL2PAIR(pair)->head = value;
 }
 
-void Scm_Pair_set_tail(struct ScmVal* pair, struct ScmVal* value) {
-  SCM_UNTAG(struct ScmPair*, pair)->tail = value;
+void Scm_Pair_set_tail(ScmVal pair, ScmVal value) {
+  SCM_VAL2PAIR(pair)->tail = value;
 }
 
-struct ScmVal* Scm_Procedure_new(struct ScmVal* (*fptr)(struct ScmVal*)) {
-  struct ScmProcedure* cfunc = alloc(sizeof(struct ScmProcedure));
-  cfunc->type  = PROCEDURE;
-  cfunc->fptr  = fptr;
-  return (struct ScmVal*)cfunc;
+ScmVal Scm_Procedure_new(ScmVal (*fptr)(ScmVal)) {
+  struct ScmProcedure* proc = alloc(sizeof(struct ScmProcedure));
+  proc->type  = PROCEDURE;
+  proc->fptr  = fptr;
+  return SCM_OBJ2VAL(proc);
 }
 
-struct ScmVal* Scm_Closure_new(struct ScmVal* formals, struct ScmVal* body, struct ScmVal* env) {
+ScmVal Scm_Closure_new(ScmVal formals, ScmVal body, ScmVal env) {
   struct ScmClosure* closure = alloc(sizeof(struct ScmClosure));
   closure->type    = CLOSURE;
   closure->formals = formals;
   closure->body    = body;
   closure->env     = env;
-  return (struct ScmVal*)closure;
+  return SCM_OBJ2VAL(closure);
 }
 
-static struct ScmVal* bind_args(struct ScmVal* formals, struct ScmVal* args) {
+static ScmVal bind_args(ScmVal formals, ScmVal args) {
   if (formals == SCM_NIL || args == SCM_NIL) {
     return SCM_NIL;
   } else if (Scm_type(formals) == PAIR) {
@@ -117,8 +144,8 @@ static struct ScmVal* bind_args(struct ScmVal* formals, struct ScmVal* args) {
   }
 }
 
-struct ScmVal* Scm_Env_new(struct ScmVal* formals, struct ScmVal* args, struct ScmVal* parent){
-  struct ScmVal* bindings;
+ScmVal Scm_Env_new(ScmVal formals, ScmVal args, ScmVal parent){
+  ScmVal bindings;
   if (Scm_type(formals) == SYMBOL) {
     bindings = cons(cons(formals, args), SCM_NIL);  
   } else {
@@ -127,7 +154,7 @@ struct ScmVal* Scm_Env_new(struct ScmVal* formals, struct ScmVal* args, struct S
   return cons(bindings, parent);
 }
 
-struct ScmVal* assq(struct ScmVal* lst, struct ScmVal* key){
+ScmVal assq(ScmVal lst, ScmVal key){
   if (lst == SCM_NIL) { 
     return SCM_NIL;
   } else if (caar(lst) == key) {
@@ -137,22 +164,22 @@ struct ScmVal* assq(struct ScmVal* lst, struct ScmVal* key){
   }
 }
 
-static struct ScmVal* lookup_binding(struct ScmVal* env, struct ScmVal* symbol) {
-  struct ScmVal* binding;
+static ScmVal lookup_binding(ScmVal env, ScmVal symbol) {
+  ScmVal binding;
   binding  = assq(car(env), symbol);
   if (binding != SCM_NIL) {
     return binding;
   } else if (cdr(env) != SCM_NIL) {
     return lookup_binding(cdr(env), symbol);
   } else {
-    return NULL;
+    return SCM_UNBOUND;
   }
 }
 
-struct ScmVal* Scm_define_symbol(struct ScmVal* env, struct ScmVal* symbol, struct ScmVal* value) {
-  struct ScmVal* binding;
+ScmVal Scm_define_symbol(ScmVal env, ScmVal symbol, ScmVal value) {
+  ScmVal binding;
   binding = lookup_binding(env, symbol);
-  if (binding) {
+  if (binding != SCM_UNBOUND) {
     set_cdr(binding, value);
   } else {
     set_car(env, cons(cons(symbol, value), car(env)));
@@ -160,9 +187,9 @@ struct ScmVal* Scm_define_symbol(struct ScmVal* env, struct ScmVal* symbol, stru
   return symbol;
 }
 
-struct ScmVal* Scm_lookup_symbol(struct ScmVal* env, struct ScmVal* symbol) {
-  struct ScmVal* binding = lookup_binding(env, symbol);
-  return binding ? cdr(binding) : SCM_UNBOUND;
+ScmVal Scm_lookup_symbol(ScmVal env, ScmVal symbol) {
+  ScmVal binding = lookup_binding(env, symbol);
+  return binding != SCM_UNBOUND ? cdr(binding) : SCM_UNBOUND;
 }
 
 static int peekc(FILE* stream) {
@@ -172,7 +199,7 @@ static int peekc(FILE* stream) {
   return c;
 }
 
-static struct ScmVal* parse_atom(FILE* stream) {
+static ScmVal parse_atom(FILE* stream) {
   char  buf[1028] = "\0";
   char  *pbuf     = buf;
   while(isspace(peekc(stream))) getc(stream);
@@ -194,8 +221,8 @@ static struct ScmVal* parse_atom(FILE* stream) {
   };
 }
 
-static struct ScmVal* parse_list(FILE* stream) {
-  struct ScmVal* head, *tail;
+static ScmVal parse_list(FILE* stream) {
+  ScmVal head, tail;
   while(isspace(peekc(stream))) getc(stream);
   if (peekc(stream) == ')' && getc(stream)) {
     return SCM_NIL;
@@ -210,7 +237,7 @@ static struct ScmVal* parse_list(FILE* stream) {
   }  
 }
 
-struct ScmVal* Scm_parse(FILE* stream) {
+ScmVal Scm_parse(FILE* stream) {
   if (!stream || peekc(stream) == EOF) {return SCM_EOF;}
   while(isspace(peekc(stream))) getc(stream);
   if (peekc(stream) == '(' && getc(stream)) {
@@ -222,8 +249,8 @@ struct ScmVal* Scm_parse(FILE* stream) {
   }
 }
 
-static void print_list(struct ScmVal* exp) {
-  struct ScmVal* tail;
+static void print_list(ScmVal exp) {
+  ScmVal tail;
   Scm_print(car(exp));
   tail = cdr(exp);
   if (tail != SCM_NIL) {
@@ -235,7 +262,7 @@ static void print_list(struct ScmVal* exp) {
   }
 }
 
-void Scm_print(struct ScmVal* exp) {
+void Scm_print(ScmVal exp) {
   if (!exp) {
     return;
   }
@@ -254,7 +281,7 @@ void Scm_print(struct ScmVal* exp) {
   }
 }
 
-static struct ScmVal* eval_args(struct ScmVal* args, struct ScmVal* env) {
+static ScmVal eval_args(ScmVal args, ScmVal env) {
   if (Scm_type(args) == NIL) {
     return SCM_NIL;
   } else {
@@ -262,10 +289,10 @@ static struct ScmVal* eval_args(struct ScmVal* args, struct ScmVal* env) {
   }
 }
 
-struct ScmVal* Scm_eval(struct ScmVal* exp, struct ScmVal* env) {
+ScmVal Scm_eval(ScmVal exp, ScmVal env) {
   int               type;
-  struct ScmVal*    op;
-  struct ScmVal*    res;
+  ScmVal    op;
+  ScmVal    res;
   struct ScmProcedure* cfunc;
   struct ScmClosure*   closure;
 
@@ -311,7 +338,7 @@ struct ScmVal* Scm_eval(struct ScmVal* exp, struct ScmVal* env) {
         goto EVAL_SEQ;
       }
     }
-    return NULL;
+    return SCM_UNSPECIFIED;
   } else if(type == SYMBOL) {
     return Scm_lookup_symbol(env, exp);
   } else {
@@ -319,50 +346,50 @@ struct ScmVal* Scm_eval(struct ScmVal* exp, struct ScmVal* env) {
   }
 }
 
-static struct ScmVal* procedure_add(struct ScmVal* args) {
+static ScmVal procedure_add(ScmVal args) {
   long a = SCM_UNTAG(long, car(args));
   long b = SCM_UNTAG(long, cadr(args));
   return Scm_Integer_new(a + b);
 }
 
-static struct ScmVal* procedure_sub(struct ScmVal* args) {
+static ScmVal procedure_sub(ScmVal args) {
   long a = SCM_UNTAG(long, car(args));
   long b = SCM_UNTAG(long, cadr(args));
   return Scm_Integer_new(a - b);
 }
 
-static struct ScmVal* procedure_mult(struct ScmVal* args) {
+static ScmVal procedure_mult(ScmVal args) {
   long a = SCM_UNTAG(long, car(args));
   long b = SCM_UNTAG(long, cadr(args));
   return Scm_Integer_new(a * b);
 }
 
-static struct ScmVal* procedure_eq(struct ScmVal* args) {
+static ScmVal procedure_eq(ScmVal args) {
   return Scm_Boolean_new(car(args) == cadr(args)); 
 }
 
-static struct ScmVal* procedure_car(struct ScmVal* args) {
+static ScmVal procedure_car(ScmVal args) {
   return car(car(args));
 }
 
-static struct ScmVal* procedure_cdr(struct ScmVal* args) {
+static ScmVal procedure_cdr(ScmVal args) {
   return cdr(car(args));
 }
 
-static struct ScmVal* procedure_eval(struct ScmVal* args) {
+static ScmVal procedure_eval(ScmVal args) {
   return Scm_eval(car(args), env);
 }
 
-static struct ScmVal* procedure_read(struct ScmVal* args) {
+static ScmVal procedure_read(ScmVal args) {
   return Scm_parse(stdin);
 }
 
-static struct ScmVal* procedure_quit(struct ScmVal* args) {
+static ScmVal procedure_quit(ScmVal args) {
   exit(0);
   return SCM_EOF;
 }
 
-static struct ScmVal* procedure_time_ms(struct ScmVal* args) {
+static ScmVal procedure_time_ms(ScmVal args) {
   struct timeval tp;
   gettimeofday(&tp, NULL);
   return Scm_Integer_new(tp.tv_sec * 1000 + tp.tv_usec / 10000);
@@ -422,7 +449,6 @@ int main() {
   printf("'------------------'\n\n");
 
   Scm_init(2 << 29);
-
   while (true) {
     printf("eva> ");
     Scm_print(Scm_eval(Scm_parse(stdin), env));
