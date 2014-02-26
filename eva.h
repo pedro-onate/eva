@@ -9,13 +9,6 @@
   extern "C" {
 #endif
 
-extern struct ScmVal* SCM_NIL;
-extern struct ScmVal* SCM_TRUE;
-extern struct ScmVal* SCM_FALSE;
-extern struct ScmVal* SCM_UNBOUND;
-extern struct ScmVal* SCM_UNSPECIFIED;
-extern struct ScmVal* SCM_EOF;
-
 enum ScmType {
   NIL,
   BOOLEAN,
@@ -33,41 +26,19 @@ enum ScmType {
   INVALID
 };
 
-struct ScmVal {
-  enum ScmType type;
-};
+typedef void* ScmVal;
 
-struct Pair {
-  struct ScmVal* head;
-  struct ScmVal* tail;
-};
-
-struct Closure {
-  enum ScmType   type;
-  struct ScmVal* formals;
-  struct ScmVal* body;
-  struct ScmVal* env;
-};
-
-struct Procedure {
-  enum ScmType   type;
-  struct ScmVal* (*fptr)(struct ScmVal*);
-};
-
-struct String {
-  enum ScmType type;
-  char         value[];
-};
-
-struct Port {
-  enum ScmType type;
-  FILE*        stream;
-};
+extern ScmVal SCM_NIL;
+extern ScmVal SCM_TRUE;
+extern ScmVal SCM_FALSE;
+extern ScmVal SCM_UNBOUND;
+extern ScmVal SCM_UNSPECIFIED;
+extern ScmVal SCM_EOF;
 
 void Scm_init(size_t heap_size);
-enum ScmType Scm_type(struct ScmVal* exp);
-struct ScmVal* Scm_Boolean_new(int value);
-struct ScmVal* Scm_Pair_new(struct ScmVal* head, struct ScmVal* tail);
+enum ScmType Scm_type(ScmVal exp);
+ScmVal Scm_Boolean_new(int value);
+ScmVal Scm_Pair_new(ScmVal head, ScmVal tail);
 
 #define cons(a, b)    Scm_Pair_new(a, b)
 #define car(e)        Scm_Pair_car(e)
@@ -75,35 +46,37 @@ struct ScmVal* Scm_Pair_new(struct ScmVal* head, struct ScmVal* tail);
 #define caar(e)       car(car(e))
 #define cadr(e)       car(cdr(e))
 #define cddr(e)       cdr(cdr(e))
+#define caadr(e)      car(cadr(e))
 #define caddr(e)      car(cddr(e))
+#define cdadr(e)      cdr(cadr(e))
 #define cdddr(e)      cdr(cddr(e))
 #define cadddr(e)     car(cdddr(e))
 #define set_car(e, v) Scm_Pair_set_head(e, v)
 #define set_cdr(e, v) Scm_Pair_set_tail(e, v)
 
-struct ScmVal* Scm_Pair_head(struct ScmVal* pair);
-struct ScmVal* Scm_Pair_tail(struct ScmVal* pair);
-void Scm_Pair_set_head(struct ScmVal* cons, struct ScmVal* value);
-void Scm_Pair_set_tail(struct ScmVal* cons, struct ScmVal* value);
-struct ScmVal* Scm_Integer_new(long value);
-struct ScmVal* Scm_Symbol_new(char* symbol);
-struct ScmVal* Scm_String_new(char* value);
-struct ScmVal* Scm_Character_new(int c);
-struct ScmVal* Scm_Port_new(FILE* stream);
-struct ScmVal* Scm_Port_read_char(struct ScmVal* port);
-struct ScmVal* Scm_Port_peek_char(struct ScmVal* port);
-struct ScmVal* Scm_Port_write_char(struct ScmVal* port, struct ScmVal* c);
-struct ScmVal* Scm_Port_write(struct ScmVal* port, struct ScmVal* obj);
-struct ScmVal* Scm_Port_read(struct ScmVal* port);
-struct ScmVal* Scm_is_eof_obj(struct ScmVal* port);
-struct ScmVal* Scm_Closure_new(struct ScmVal* formals, struct ScmVal* body, struct ScmVal* env);
-struct ScmVal* Scm_Procedure_new(struct ScmVal* (*fptr)(struct ScmVal*));
-struct ScmVal* Scm_parse(FILE* istream);
-void Scm_print(FILE* ostream, struct ScmVal* exp);
-struct ScmVal* Scm_eval(struct ScmVal* exp, struct ScmVal* env);
-struct ScmVal* Scm_Env_new(struct ScmVal* formals, struct ScmVal* args, struct ScmVal* parent);
-struct ScmVal* Scm_Env_define_symbol(struct ScmVal* env, struct ScmVal* symbol, struct ScmVal* value);
-struct ScmVal* Scm_Env_lookup_symbol(struct ScmVal* env, struct ScmVal* symbol);
+ScmVal Scm_Pair_head(ScmVal pair);
+ScmVal Scm_Pair_tail(ScmVal pair);
+void Scm_Pair_set_head(ScmVal cons, ScmVal value);
+void Scm_Pair_set_tail(ScmVal cons, ScmVal value);
+ScmVal Scm_Integer_new(long value);
+ScmVal Scm_Symbol_new(char* symbol);
+ScmVal Scm_String_new(char* value);
+ScmVal Scm_Character_new(int c);
+ScmVal Scm_Port_new(FILE* stream);
+ScmVal Scm_Port_read_char(ScmVal port);
+ScmVal Scm_Port_peek_char(ScmVal port);
+ScmVal Scm_Port_write_char(ScmVal port, ScmVal c);
+ScmVal Scm_Port_write(ScmVal port, ScmVal obj);
+ScmVal Scm_Port_read(ScmVal port);
+ScmVal Scm_is_eof_obj(ScmVal port);
+ScmVal Scm_Closure_new(ScmVal formals, ScmVal body, ScmVal env);
+ScmVal Scm_Procedure_new(ScmVal (*fptr)(ScmVal));
+ScmVal Scm_parse(FILE* istream);
+void Scm_print(FILE* ostream, ScmVal exp);
+ScmVal Scm_eval(ScmVal exp, ScmVal env);
+ScmVal Scm_Env_new(ScmVal formals, ScmVal args, ScmVal parent);
+ScmVal Scm_Env_define_symbol(ScmVal env, ScmVal symbol, ScmVal value);
+ScmVal Scm_Env_lookup_symbol(ScmVal env, ScmVal symbol);
 int socket_connect(char* host, char* port);
 int socket_listen(char* port);
 int socket_accept(int fd);
