@@ -51,7 +51,7 @@ enum Tag {
 };
 
 struct SymbolTable {char* symbols[65536]; int id;};
-struct Heap {char* buffer; int size; char* ptr;};
+struct Heap {char* buffer; size_t size; char* ptr;};
 
 #define SCM_TAG_BITS        3
 #define SCM_TAG_MASK        0x7
@@ -78,10 +78,6 @@ static FILE* ostream;
 
 static ScmVal iport;
 static ScmVal oport;
-
-static enum ScmType Scm_Obj_type(struct ScmObj* obj) {
-  return INVALID;
-}
 
 enum ScmType Scm_type(ScmVal value) {
   switch(SCM_GET_TAG(value)) {
@@ -382,6 +378,10 @@ void Scm_print(FILE* ostream, ScmVal exp) {
   }
 }
 
+ScmVal Scm_top_level_env() {
+  return env;
+}
+
 static ScmVal eval_args(ScmVal args, ScmVal env) {
   if (Scm_type(args) == NIL) {
     return SCM_NIL;
@@ -391,9 +391,8 @@ static ScmVal eval_args(ScmVal args, ScmVal env) {
 }
 
 ScmVal Scm_eval(ScmVal exp, ScmVal env) {
-  int               type;
-  ScmVal    op;
-  ScmVal    res;
+  enum ScmType         type;
+  ScmVal               op, args;
   struct ScmProcedure* cfunc;
   struct ScmClosure*   closure;
 
@@ -435,11 +434,13 @@ ScmVal Scm_eval(ScmVal exp, ScmVal env) {
       type = Scm_type(op);
       if (type == PROCEDURE) {
         cfunc = (struct ScmProcedure*)op;
-        return cfunc->fptr(eval_args(cdr(exp), env));
+        args  = eval_args(cdr(exp), env);
+        return cfunc->fptr(args);
       } else if (type == CLOSURE) {
         closure = (struct ScmClosure*)op;
-        env = Scm_Env_new(closure->formals, eval_args(cdr(exp), env), closure->env);
-        exp = closure->body;
+        args = eval_args(cdr(exp), env);
+        env  = Scm_Env_new(closure->formals, args, closure->env);
+        exp  = closure->body;
         goto EVAL_SEQ;
       }
     }
@@ -482,7 +483,7 @@ static ScmVal procedure_cdr(ScmVal args) {
 }
 
 static ScmVal procedure_eval(ScmVal args) {
-  return Scm_eval(car(args), env);
+  return Scm_eval(car(args), cadr(args));
 }
 
 static ScmVal procedure_read(ScmVal args) {
@@ -509,6 +510,10 @@ static ScmVal procedure_quit(ScmVal args) {
   exit(0);
   return SCM_EOF;
 }
+
+int socket_listen(char* port);
+int socket_accept(int sockfd);
+int socket_connect(char* host, char* port);
 
 static ScmVal procedure_socket_listen(ScmVal args) {
   struct String* port = (struct String*)car(args);
@@ -547,21 +552,31 @@ static ScmVal procedure_time_ms(ScmVal args) {
   return Scm_Integer_new(tp.tv_sec * 1000 + tp.tv_usec / 10000);
 }
 
-static ScmVal procedure_load(ScmVal args) {
-  struct String* string = (struct String*)SCM_VAL2OBJ(car(args));
-
-  FILE* istream = fopen(string->value, "r");
-
-  ScmVal exp = Scm_parse(istream);
-
-  while(exp != SCM_EOF) {
-    Scm_eval(exp, env);
-    exp = Scm_parse(istream);
+ScmVal Scm_load(char* filename) {
+  FILE* istream = fopen(filename, "r");
+  if (istream) {
+    ScmVal exp = Scm_parse(istream);
+    while(exp != SCM_EOF) {
+      Scm_eval(exp, env);
+      exp = Scm_parse(istream);
+    }
+    fclose(istream);
   }
-
   return SCM_UNSPECIFIED;
 }
 
+static ScmVal procedure_load(ScmVal args) {
+  struct String* string = (struct String*)SCM_VAL2OBJ(car(args));
+  return Scm_load(string->value);
+}
+
+static ScmVal procedure_interaction_env(ScmVal args) {
+  return Scm_top_level_env();
+}
+
+void Scm_define(ScmVal env, char* symbol, ScmVal val) {
+  Scm_define_symbol(env, Scm_Symbol_new(symbol), val);
+}
 
 //#define ALIGN_N(p, n)     (p) % (n) == 0 ? (p) : (p) + ((n) - (p) % (n))
 #define ALIGN_N(p, n)     ((((uintptr_t)p) + (n - 1)) & -n)
@@ -598,27 +613,29 @@ void Scm_init(size_t heap_size) {
   SCM_EOF         = SCM_TAGGED(EOF_OBJ, kImmediateTag);
   env             = Scm_Env_new(SCM_NIL, SCM_NIL, SCM_NIL);
 
-  Scm_define_symbol(env, Scm_Symbol_new("+"), Scm_Procedure_new(procedure_add));
-  Scm_define_symbol(env, Scm_Symbol_new("-"), Scm_Procedure_new(procedure_sub));
-  Scm_define_symbol(env, Scm_Symbol_new("*"), Scm_Procedure_new(procedure_mult));
-  Scm_define_symbol(env, Scm_Symbol_new("="), Scm_Procedure_new(procedure_eq));
-  Scm_define_symbol(env, Scm_Symbol_new("car"), Scm_Procedure_new(procedure_car));
-  Scm_define_symbol(env, Scm_Symbol_new("cdr"), Scm_Procedure_new(procedure_cdr));
-  Scm_define_symbol(env, Scm_Symbol_new("eval"), Scm_Procedure_new(procedure_eval));
-  Scm_define_symbol(env, Scm_Symbol_new("read"), Scm_Procedure_new(procedure_read));
-  Scm_define_symbol(env, Scm_Symbol_new("read-char"), Scm_Procedure_new(procedure_read_char));
-  Scm_define_symbol(env, Scm_Symbol_new("peek-char"), Scm_Procedure_new(procedure_peek_char));
-  Scm_define_symbol(env, Scm_Symbol_new("eof-obj?"), Scm_Procedure_new(procedure_is_eof_obj));
-  Scm_define_symbol(env, Scm_Symbol_new("write"), Scm_Procedure_new(procedure_write));
-  Scm_define_symbol(env, Scm_Symbol_new("write-char"), Scm_Procedure_new(procedure_write_char));
-  Scm_define_symbol(env, Scm_Symbol_new("quit"), Scm_Procedure_new(procedure_quit));
-  Scm_define_symbol(env, Scm_Symbol_new("connect"), Scm_Procedure_new(procedure_socket_connect));
-  Scm_define_symbol(env, Scm_Symbol_new("listen"), Scm_Procedure_new(procedure_socket_listen));
-  Scm_define_symbol(env, Scm_Symbol_new("accept"), Scm_Procedure_new(procedure_socket_accept));
-  Scm_define_symbol(env, Scm_Symbol_new("close"), Scm_Procedure_new(procedure_close));
-  Scm_define_symbol(env, Scm_Symbol_new("not"), Scm_Procedure_new(procedure_not));
-  Scm_define_symbol(env, Scm_Symbol_new("time-ms"), Scm_Procedure_new(procedure_time_ms));
-  Scm_define_symbol(env, Scm_Symbol_new("load"), Scm_Procedure_new(procedure_load));
+  Scm_define(env, "eval", Scm_Procedure_new(procedure_eval));
+  Scm_define(env, "read", Scm_Procedure_new(procedure_read));
+  Scm_define(env, "read-char", Scm_Procedure_new(procedure_read_char));
+  Scm_define(env, "peek-char", Scm_Procedure_new(procedure_peek_char));
+  Scm_define(env, "eof-obj?", Scm_Procedure_new(procedure_is_eof_obj));
+  Scm_define(env, "write", Scm_Procedure_new(procedure_write));
+  Scm_define(env, "write-char", Scm_Procedure_new(procedure_write_char));
+  Scm_define(env, "quit", Scm_Procedure_new(procedure_quit));
+  Scm_define(env, "connect", Scm_Procedure_new(procedure_socket_connect));
+  Scm_define(env, "listen", Scm_Procedure_new(procedure_socket_listen));
+  Scm_define(env, "accept", Scm_Procedure_new(procedure_socket_accept));
+  Scm_define(env, "close", Scm_Procedure_new(procedure_close));
+  Scm_define(env, "not", Scm_Procedure_new(procedure_not));
+  Scm_define(env, "time-ms", Scm_Procedure_new(procedure_time_ms));
+  Scm_define(env, "load", Scm_Procedure_new(procedure_load));
+  Scm_define(env, "interaction-environment", Scm_Procedure_new(procedure_interaction_env));
+  Scm_define(env, "eval", Scm_Procedure_new(procedure_eval));
+  Scm_define(env, "+", Scm_Procedure_new(procedure_add));
+  Scm_define(env, "*", Scm_Procedure_new(procedure_mult));
+  Scm_define(env, "car", Scm_Procedure_new(procedure_car));
+  Scm_define(env, "cdr", Scm_Procedure_new(procedure_cdr));
+  Scm_define(env, "-", Scm_Procedure_new(procedure_sub));
+  Scm_define(env, "=", Scm_Procedure_new(procedure_eq));
 }
 
 #define BACKLOG 128     // how many pending connections queue will hold
@@ -651,7 +668,6 @@ int socket_listen(char* port) {
       fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
       return -1;
   }
-  // loop through all the results and bind to the first we can
   for(p = servinfo; p != NULL; p = p->ai_next) {
       if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
           perror("server: socket");
@@ -672,7 +688,7 @@ int socket_listen(char* port) {
       fprintf(stderr, "server: failed to bind\n");
       return -1;
   }
-  freeaddrinfo(servinfo); // all done with this structure
+  freeaddrinfo(servinfo);
   if (listen(sockfd, BACKLOG) == -1) {
       perror("listen");
       return -1;
@@ -689,17 +705,15 @@ int socket_listen(char* port) {
 
 int socket_accept(int sockfd) {
   int new_fd;
-  struct sockaddr_storage their_addr; // connector's address information
+  struct sockaddr_storage their_addr;
   socklen_t sin_size;
   char s[INET6_ADDRSTRLEN];
-  //printf("server: waiting for connections...\n");
   sin_size = sizeof their_addr;
   new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
   if (new_fd == -1) {
     return -1;
   }
   inet_ntop(their_addr.ss_family, get_in_addr((struct sockaddr *)&their_addr), s, sizeof s);
-  //printf("server: got connection from %s\n", s);
   return new_fd;
 }
 
@@ -715,7 +729,6 @@ int socket_connect(char* host, char* port) {
     fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
     return -1;
   }
-  // loop through all the results and connect to the first we can
   for(p = servinfo; p != NULL; p = p->ai_next) {
     if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
       perror("client: socket");
@@ -733,11 +746,11 @@ int socket_connect(char* host, char* port) {
     return -1;
   }
   inet_ntop(p->ai_family, get_in_addr((struct sockaddr *)p->ai_addr), s, sizeof s);
-  //printf("client: connecting to %s\n", s);
   freeaddrinfo(servinfo); // all done with this structure
   return sockfd;
 }
 
+//#define SOCKET
 int main(int argc, char* argv[]) {
 #ifdef SOCKET
   int listen_fd = socket_listen("1234");
@@ -757,23 +770,5 @@ int main(int argc, char* argv[]) {
   iport = Scm_Port_new(istream);
   oport = Scm_Port_new(ostream);
 
-  fprintf(ostream, ".------------------.\n");
-  fprintf(ostream, "|  EvaScheme v0.1  |\n");
-  fprintf(ostream, "'------------------'\n\n");
-
-  ScmVal exp;
-  ScmVal res;
-
-  do {
-    fprintf(ostream, "eva> ");
-    //Scm_print(ostream, Scm_eval(Scm_parse(istream), env));
-
-    exp = Scm_Port_read(iport);
-
-    if (exp != SCM_EOF) {
-      res = Scm_eval(exp, env);
-      Scm_Port_write(oport, res);
-      fprintf(ostream, "\n"); 
-    }
-  } while(exp != SCM_EOF);
+  Scm_load("scm/init.scm");
 }
