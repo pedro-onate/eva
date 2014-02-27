@@ -1,0 +1,10 @@
+(define (do-request server-socket)
+  (define client-socket (accept server-socket))
+  (read-char client-socket)
+  (write "HTTP/1.0 200 OK\n" client-socket)
+  (write "Content-Type: text/html\n\n" client-socket)
+  (write "<http><head><title>Hello World!</title></head><body>Hello World!</body></http>" client-socket)
+  (close client-socket)
+  (do-request server-socket))
+
+(do-request (listen "80"))
