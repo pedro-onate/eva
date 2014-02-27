@@ -40,6 +40,11 @@ struct Port {
   FILE*        stream;
 };
 
+struct ScmMacro {
+  enum ScmType type;
+  ScmVal       transformer;
+};
+  
 enum Tag {
   kObjectTag    = 0x0, /* 0b000 */
   kPairTag      = 0x1, /* 0b001 */
@@ -68,7 +73,7 @@ struct Heap {char* buffer; size_t size; char* ptr;};
 static ScmVal env;
 static struct Heap heap;
 static struct SymbolTable symtab;
-static ScmVal DEFINE, LAMBDA, IF, BEGIN, QUOTE;
+static ScmVal DEFINE, LAMBDA, IF, BEGIN, QUOTE, QUASIQUOTE, UNQUOTE, UNQUOTE_SPLICE;
 ScmVal        SCM_NIL, SCM_FALSE, SCM_TRUE, SCM_UNBOUND, SCM_UNSPECIFIED, SCM_EOF;
 
 void* (*alloc)(size_t);
@@ -160,6 +165,13 @@ ScmVal Scm_Closure_new(ScmVal formals, ScmVal body, ScmVal env) {
   closure->body    = body;
   closure->env     = env;
   return SCM_OBJ2VAL(closure);
+}
+
+ScmVal Scm_Macro_new(ScmVal transformer) {
+  struct ScmMacro* macro = alloc(sizeof(struct ScmMacro));
+  macro->type        = MACRO;
+  macro->transformer = transformer;
+  return SCM_OBJ2VAL(macro);
 }
 
 static int peekc(FILE* stream) {
@@ -341,7 +353,15 @@ ScmVal Scm_parse(FILE* stream) {
   if (peekc(stream) == '(' && getc(stream)) {
     return parse_list(stream);
   } else if (peekc(stream) == '\'' && getc(stream)) {
-    return cons(Scm_Symbol_new("quote"), cons(Scm_parse(stream), SCM_NIL));
+    return cons(QUOTE, cons(Scm_parse(stream), SCM_NIL));
+  } else if (peekc(stream) == '`' && getc(stream)) {
+    return cons(QUASIQUOTE, cons(Scm_parse(stream), SCM_NIL));
+  } else if (peekc(stream) == ',' && getc(stream)) {
+    if (peekc(stream) == '@' && getc(stream)) {
+      return cons(UNQUOTE_SPLICE, cons(Scm_parse(stream), SCM_NIL));
+    } else {
+      return cons(UNQUOTE, cons(Scm_parse(stream), SCM_NIL));
+    }
   } else {
     return parse_atom(stream);
   }
@@ -374,6 +394,7 @@ void Scm_print(FILE* ostream, ScmVal exp) {
     case UNBOUND:     fprintf(ostream, "#<unbound>");                                         break;
     case EOF_OBJ:     fprintf(ostream, "#<eof>");                                             break;
     case PAIR:        fprintf(ostream, "("); print_list(ostream, exp); fprintf(ostream, ")"); break;
+    case MACRO:       fprintf(ostream, "#<macro>");                                           break;
     default:          fprintf(ostream, "undefined type");                                     break;
   }
 }
@@ -387,6 +408,27 @@ static ScmVal eval_args(ScmVal args, ScmVal env) {
     return SCM_NIL;
   } else {
     return cons(Scm_eval(car(args), env), eval_args(cdr(args), env));
+  }
+}
+
+static ScmVal eval_seq(ScmVal seq, ScmVal env) {
+  while(cdr(seq) != SCM_NIL) {
+    Scm_eval(car(seq), env);
+    seq = cdr(seq);
+  }
+  return car(seq);
+}
+
+ScmVal Scm_apply(ScmVal proc, ScmVal args) {
+  enum ScmType type;
+  ScmVal       env;
+  type = Scm_type(proc);
+  if (type == PROCEDURE) {
+    return ((struct ScmProcedure*)proc)->fptr(args);
+  } else {
+    struct ScmClosure* closure = (struct ScmClosure*)proc;
+    env  = Scm_Env_new(closure->formals, args, closure->env);
+    return Scm_eval(eval_seq(closure->body, env), env);
   }
 }
 
@@ -421,13 +463,7 @@ ScmVal Scm_eval(ScmVal exp, ScmVal env) {
     } else if (op == LAMBDA) {
       return Scm_Closure_new(cadr(exp), cddr(exp), env);
     } else if (op == BEGIN) {
-      exp = cdr(exp);
-      EVAL_SEQ:;
-      while(cdr(exp) != SCM_NIL) {
-        Scm_eval(car(exp), env);
-        exp = cdr(exp);
-      }
-      exp = car(exp);
+      exp = eval_seq(cdr(exp), env);
       goto EVAL;
     } else {
       op = Scm_eval(op, env);
@@ -440,8 +476,11 @@ ScmVal Scm_eval(ScmVal exp, ScmVal env) {
         closure = (struct ScmClosure*)op;
         args = eval_args(cdr(exp), env);
         env  = Scm_Env_new(closure->formals, args, closure->env);
-        exp  = closure->body;
-        goto EVAL_SEQ;
+        exp  = eval_seq(closure->body, env);
+        goto EVAL;
+      } else if (type == MACRO) {
+        exp = Scm_apply(((struct ScmMacro*)op)->transformer, cdr(exp));
+        goto EVAL;
       }
     }
     return SCM_UNSPECIFIED;
@@ -511,6 +550,14 @@ static ScmVal procedure_quit(ScmVal args) {
   return SCM_EOF;
 }
 
+static ScmVal procedure_is_null(ScmVal args) {
+  return Scm_Boolean_new(car(args) == SCM_NIL);
+}
+
+static ScmVal procedure_is_pair(ScmVal args) {
+  return Scm_Boolean_new(Scm_type(car(args)) == PAIR);
+}
+
 int socket_listen(char* port);
 int socket_accept(int sockfd);
 int socket_connect(char* host, char* port);
@@ -533,6 +580,10 @@ static ScmVal procedure_socket_connect(ScmVal args) {
 
 static ScmVal procedure_is_eof_obj(ScmVal args) {
   return Scm_is_eof_obj(car(args));
+}
+
+static ScmVal procedure_is_eq(ScmVal args) {
+  return Scm_Boolean_new(car(args) == cadr(args));
 }
 
 static ScmVal procedure_close(ScmVal args) {
@@ -574,6 +625,18 @@ static ScmVal procedure_interaction_env(ScmVal args) {
   return Scm_top_level_env();
 }
 
+static ScmVal procedure_macro(ScmVal args) {
+  return Scm_Macro_new(car(args));
+}
+
+static ScmVal procedure_macro_transformer(ScmVal args) {
+  return ((struct ScmMacro*)car(args))->transformer;
+}
+
+static ScmVal procedure_cons(ScmVal args) {
+  return Scm_Pair_new(car(args), cadr(args));
+}
+
 void Scm_define(ScmVal env, char* symbol, ScmVal val) {
   Scm_define_symbol(env, Scm_Symbol_new(symbol), val);
 }
@@ -605,6 +668,9 @@ void Scm_init(size_t heap_size) {
   IF              = Scm_Symbol_new("if");
   BEGIN           = Scm_Symbol_new("begin");
   QUOTE           = Scm_Symbol_new("quote");
+  QUASIQUOTE      = Scm_Symbol_new("quasiquote");
+  UNQUOTE         = Scm_Symbol_new("unquote");
+  UNQUOTE_SPLICE  = Scm_Symbol_new("unquote-splice");
   SCM_NIL         = SCM_TAGGED(NIL, kImmediateTag);
   SCM_FALSE       = Scm_Boolean_new(0);
   SCM_TRUE        = Scm_Boolean_new(1);
@@ -613,6 +679,8 @@ void Scm_init(size_t heap_size) {
   SCM_EOF         = SCM_TAGGED(EOF_OBJ, kImmediateTag);
   env             = Scm_Env_new(SCM_NIL, SCM_NIL, SCM_NIL);
 
+  Scm_define(env, "macro", Scm_Procedure_new(procedure_macro));
+  Scm_define(env, "macro-transformer", Scm_Procedure_new(procedure_macro_transformer));
   Scm_define(env, "eval", Scm_Procedure_new(procedure_eval));
   Scm_define(env, "read", Scm_Procedure_new(procedure_read));
   Scm_define(env, "read-char", Scm_Procedure_new(procedure_read_char));
@@ -630,6 +698,10 @@ void Scm_init(size_t heap_size) {
   Scm_define(env, "load", Scm_Procedure_new(procedure_load));
   Scm_define(env, "interaction-environment", Scm_Procedure_new(procedure_interaction_env));
   Scm_define(env, "eval", Scm_Procedure_new(procedure_eval));
+  Scm_define(env, "cons", Scm_Procedure_new(procedure_cons));
+  Scm_define(env, "eq?", Scm_Procedure_new(procedure_is_eq));
+  Scm_define(env, "pair?", Scm_Procedure_new(procedure_is_pair));
+  Scm_define(env, "null?", Scm_Procedure_new(procedure_is_null));
   Scm_define(env, "+", Scm_Procedure_new(procedure_add));
   Scm_define(env, "*", Scm_Procedure_new(procedure_mult));
   Scm_define(env, "car", Scm_Procedure_new(procedure_car));
@@ -765,7 +837,7 @@ int main(int argc, char* argv[]) {
   istream = stdin;
 #endif
 
-  Scm_init(2 << 27);
+  Scm_init(64000000);
 
   iport = Scm_Port_new(istream);
   oport = Scm_Port_new(ostream);

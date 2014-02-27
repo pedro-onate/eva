@@ -23,6 +23,7 @@ enum ScmType {
   UNSPECIFIED,
   EOF_OBJ,
   PORT,
+  MACRO,
   INVALID
 };
 
@@ -78,6 +79,7 @@ ScmVal Scm_Env_define_symbol(ScmVal env, ScmVal symbol, ScmVal value);
 ScmVal Scm_top_level_env();
 void Scm_define(ScmVal env, char*, ScmVal value);
 ScmVal Scm_Env_lookup_symbol(ScmVal env, ScmVal symbol);
+ScmVal Scm_Macro_new(ScmVal transformer);
 
 #ifdef __cplusplus
   }
