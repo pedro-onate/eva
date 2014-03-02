@@ -11,32 +11,39 @@
 
 struct ScmObj {
   enum ScmType type;
+  ScmVal       pfwd;
 };
 
 struct ScmPair {
+  enum ScmType type;
+  ScmVal pfwd;
   ScmVal head;
   ScmVal tail;
 };
 
 struct ScmClosure {
-  enum ScmType   type;
-  ScmVal formals;
-  ScmVal body;
-  ScmVal env;
+  enum ScmType type;
+  ScmVal       pfwd;
+  ScmVal       formals;
+  ScmVal       body;
+  ScmVal       env;
 };
 
 struct ScmProcedure {
-  enum ScmType   type;
-  ScmVal (*fptr)(ScmVal);
+  enum ScmType type;
+  ScmVal       pfwd;
+  ScmVal       (*fptr)(ScmVal);
 };
 
 struct String {
   enum ScmType type;
+  ScmVal       pfwd;
   char         value[];
 };
 
 struct Port {
   enum ScmType type;
+  ScmVal       pfwd;
   FILE*        stream;
 };
 
@@ -51,19 +58,23 @@ enum Tag {
 };
 
 struct SymbolTable {char* symbols[65536]; int id;};
-struct Heap {char* buffer; size_t size; char* ptr;};
+struct Heap {char* buffer; size_t size; char* ptr; char* from; char* to;};
 
 #define SCM_TAG_BITS        3
 #define SCM_TAG_MASK        0x7
 #define SCM_PTR_BITS(ptr)   (intptr_t)(ptr)
-#define SCM_GET_TAG(ptr)    SCM_PTR_BITS(ptr) & SCM_TAG_MASK
+#define SCM_GET_TAG(ptr)    (SCM_PTR_BITS(ptr) & SCM_TAG_MASK)
 #define SCM_TAGGED(v, t)    (ScmVal)(SCM_PTR_BITS(v) << SCM_TAG_BITS | t)
 #define SCM_UNTAG(t, v)     ((t)(SCM_PTR_BITS(v) >> SCM_TAG_BITS))
 
-#define SCM_PAIR2VAL(pair)  ((ScmVal)(SCM_PTR_BITS(pair) | kPairTag))
-#define SCM_VAL2PAIR(val)   ((struct ScmPair*)(SCM_PTR_BITS(val) & ~SCM_TAG_MASK))
-#define SCM_OBJ2VAL(obj)    ((ScmVal)(SCM_PTR_BITS(obj) | kObjectTag))
-#define SCM_VAL2OBJ(val)    ((struct ScmObj*)val)
+#define SCM_VAL2PTR(t, val)  ((t)(SCM_PTR_BITS(val) & ~SCM_TAG_MASK))
+#define SCM_VAL2PAIR(val)    SCM_VAL2PTR(struct ScmPair*, val)
+#define SCM_VAL2OBJ(val)     SCM_VAL2PTR(struct ScmObj*, val)
+#define SCM_VAL2CLOSURE(val) SCM_VAL2PTR(struct ScmClosure*, val)
+#define SCM_TAG_PTR(ptr, t)  ((ScmVal)(SCM_PTR_BITS(ptr) | t))
+#define SCM_PAIR2VAL(pair)   SCM_TAG_PTR(pair, kPairTag)
+#define SCM_OBJ2VAL(obj)     SCM_TAG_PTR(obj, kObjectTag)
+
 
 static ScmVal env;
 static struct Heap heap;
@@ -119,12 +130,15 @@ ScmVal Scm_Symbol_new(char* value) {
 ScmVal Scm_String_new(char* value) {
   struct String* string = alloc(sizeof(struct String) + strlen(value) + 1);
   string->type = STRING;
+  string->pfwd = NULL;
   strcpy(string->value, value);
   return SCM_OBJ2VAL(string);
 }
 
 ScmVal Scm_Pair_new(ScmVal head, ScmVal tail) {
   struct ScmPair* pair = alloc(sizeof(struct ScmPair));
+  pair->type = PAIR;
+  pair->pfwd = NULL;
   pair->head = head;
   pair->tail = tail;
   return SCM_PAIR2VAL(pair);
@@ -149,6 +163,7 @@ void Scm_Pair_set_tail(ScmVal pair, ScmVal value) {
 ScmVal Scm_Procedure_new(ScmVal (*fptr)(ScmVal)) {
   struct ScmProcedure* proc = alloc(sizeof(struct ScmProcedure));
   proc->type  = PROCEDURE;
+  proc->pfwd  = NULL;
   proc->fptr  = fptr;
   return SCM_OBJ2VAL(proc);
 }
@@ -156,6 +171,7 @@ ScmVal Scm_Procedure_new(ScmVal (*fptr)(ScmVal)) {
 ScmVal Scm_Closure_new(ScmVal formals, ScmVal body, ScmVal env) {
   struct ScmClosure* closure = alloc(sizeof(struct ScmClosure));
   closure->type    = CLOSURE;
+  closure->pfwd    = NULL;
   closure->formals = formals;
   closure->body    = body;
   closure->env     = env;
@@ -169,6 +185,7 @@ static int peekc(FILE* stream) {
 ScmVal Scm_Port_new(FILE* stream) {
   struct Port* port = alloc(sizeof(struct Port));
   port->type   = PORT;
+  port->pfwd   = NULL;
   port->stream = stream;
   return SCM_OBJ2VAL(port);
 }
@@ -338,6 +355,7 @@ static ScmVal parse_list(FILE* stream) {
 
 ScmVal Scm_parse(FILE* stream) {
   while(isspace(peekc(stream))) getc(stream);
+  if (peekc(stream) == ';') while(getc(stream) != '\n'){}
   if (peekc(stream) == '(' && getc(stream)) {
     return parse_list(stream);
   } else if (peekc(stream) == '\'' && getc(stream)) {
@@ -594,10 +612,140 @@ static void* bump_allocator(size_t size) {
   return (void*)block;
 }
 
+int is_heap_alloc(ScmVal val) {
+  return SCM_GET_TAG(val) < kImmediateTag;
+}
+
+int is_to(ScmVal val) {
+  char* address = SCM_VAL2PTR(char*, val);
+  return address >= heap.to && address < heap.to + heap.size / 2;
+}
+
+int is_forwarded(ScmVal val) {
+  switch(Scm_type(val)) {
+    case PAIR:
+    case PROCEDURE:
+    case CLOSURE:
+    case STRING:
+    case PORT:
+      return SCM_VAL2OBJ(val)->pfwd != NULL;
+    default:
+      return 0;
+  }
+}
+
+void mark_copy(ScmVal* pval, char** next) {
+  struct ScmObj* obj_from;
+  size_t         size;
+  enum Tag       tag;
+
+  // Return if this reference does not point to a value on the heap
+  if (!is_heap_alloc(*pval)) {
+    return;
+  }
+
+  obj_from = SCM_VAL2OBJ(*pval);
+
+  // Return if this reference already points to an object in to space
+  if (is_to(*pval)) {
+    return;
+  }
+
+  // This reference points to a object in from space that has been moved
+  if (is_forwarded(*pval)) {
+    *pval = obj_from->pfwd;
+    return;
+  }
+
+  // This reference points to an unmoved object in from space
+  switch(Scm_type(*pval)) {
+    case PAIR:
+    size = sizeof(struct ScmPair);
+    break;
+
+    case PROCEDURE:
+    size = sizeof(struct ScmProcedure);
+    break;
+
+    case CLOSURE:
+    size = sizeof(struct ScmClosure);
+    break;
+
+    case STRING:
+    size = sizeof(struct String);
+    break;
+
+    case PORT:
+    size = sizeof(struct Port);
+    break;
+
+    default:
+      // NOOP
+      printf("should not happen\n");
+      exit(1);
+    break;
+  }
+
+
+  tag = SCM_GET_TAG(*pval);
+  memcpy(*next, obj_from, size);
+  obj_from->pfwd = *pval;
+  *pval = SCM_TAG_PTR(*next, tag);
+  *next += size;
+  //printf("next: %p\n", *next);
+}
+
+void Scm_gc() {
+  /* TODO: Ensure scan and next pointers respect alignment */
+  char* scan, *next, *tmp;
+
+  scan = next = heap.to;
+
+  mark_copy(&env, &next);
+  mark_copy(&iport, &next);
+  mark_copy(&oport, &next);
+
+  while(scan < next) {
+    //printf("scanning\n");
+    switch(Scm_type(scan)) {
+      case PAIR:
+        mark_copy(&SCM_VAL2PAIR(scan)->head, &next);
+        mark_copy(&SCM_VAL2PAIR(scan)->tail, &next);
+        scan += sizeof(struct ScmPair);
+        break;
+      case CLOSURE:
+        mark_copy(&SCM_VAL2CLOSURE(scan)->formals, &next);
+        mark_copy(&SCM_VAL2CLOSURE(scan)->body, &next);
+        mark_copy(&SCM_VAL2CLOSURE(scan)->env, &next);
+        scan += sizeof(struct ScmClosure);
+        break;
+      case STRING:
+        scan += sizeof(struct String);
+        break;
+      case PROCEDURE:
+        scan += sizeof(struct ScmProcedure);
+        break;
+      case PORT:
+        scan += sizeof(struct Port);
+        break;
+      default:
+        printf("should never happen\n");
+        exit(1);
+    }
+  }
+
+  tmp = heap.from;
+  heap.from = heap.to;
+  heap.to = tmp;
+  heap.ptr = next;
+}
+
 void Scm_init(size_t heap_size) {
   heap.size       = heap_size;
   heap.buffer     = malloc(heap_size);
   heap.ptr        = heap.buffer;
+  heap.from       = heap.ptr;
+  heap.to         = heap.from + heap_size / 2;
 
   alloc           = bump_allocator;
   DEFINE          = Scm_Symbol_new("define");
@@ -771,4 +919,18 @@ int main(int argc, char* argv[]) {
   oport = Scm_Port_new(ostream);
 
   Scm_load("scm/init.scm");
+
+  //printf("heap.from: %p, heap.to: %p, heap.ptr: %p, env: %p, iport: %p, oport: %p\n", heap.from, heap.to, heap.ptr, SCM_VAL2OBJ(env), SCM_VAL2OBJ(iport), SCM_VAL2OBJ(oport));
+
+  while(1) {
+    printf("eva> ");
+    Scm_Port_write(oport, Scm_eval(Scm_Port_read(iport), env));
+    printf("\n");
+    Scm_gc();
+    //printf("heap.from: %p, heap.to: %p, heap.ptr: %p, env: %p, iport: %p, oport: %p\n", heap.from, heap.to, heap.ptr, SCM_VAL2OBJ(env), SCM_VAL2OBJ(iport), SCM_VAL2OBJ(oport));
+  }
+
+  
+
+  //Scm_load("scm/init.scm");
 }
