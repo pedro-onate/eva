@@ -5,9 +5,9 @@
     (write "\n")
     (repl))
 
-  (write ".------------------.\n")
-  (write "|  EvaScheme v0.1  |\n")
-  (write "'------------------'\n\n")
+  (write ".--------------------.\n")
+  (write "|  EvaScheme v0.2.0  |\n")
+  (write "'--------------------'\n\n")
 
   (repl)
 )

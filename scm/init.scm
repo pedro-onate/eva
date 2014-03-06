@@ -1,4 +1,11 @@
 (define (caar pair) (car (car pair)))
 (define (cadr pair) (car (cdr pair)))
 
-;(load "scm/repl.scm")
+(define (time thunk)
+  ((lambda (t0)
+    (begin
+      (thunk)
+      (- (time-ms) t0)
+    )) (time-ms)))
+
+(load "scm/repl.scm")
