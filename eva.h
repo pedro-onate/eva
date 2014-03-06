@@ -2,8 +2,8 @@
  * EvaScheme
  */
 
-#ifndef EVASCHEME_H
-#define EVASCHEME_H
+#ifndef EVA_H
+#define EVA_H
 
 #ifdef __cplusplus
   extern "C" {
@@ -35,22 +35,25 @@ extern ScmVal SCM_UNBOUND;
 extern ScmVal SCM_UNSPECIFIED;
 extern ScmVal SCM_EOF;
 
-#define cons(a, b)    Scm_Pair_new(a, b)
-#define car(e)        Scm_Pair_car(e)
-#define cdr(e)        Scm_Pair_cdr(e)
-#define caar(e)       car(car(e))
-#define cadr(e)       car(cdr(e))
-#define cddr(e)       cdr(cdr(e))
-#define caadr(e)      car(cadr(e))
-#define caddr(e)      car(cddr(e))
-#define cdadr(e)      cdr(cadr(e))
-#define cdddr(e)      cdr(cddr(e))
-#define cadddr(e)     car(cdddr(e))
-#define set_car(e, v) Scm_Pair_set_head(e, v)
-#define set_cdr(e, v) Scm_Pair_set_tail(e, v)
+#define Scm_cons(a, b)    Scm_Pair_new(a, b)
+#define Scm_car(e)        Scm_Pair_car(e)
+#define Scm_cdr(e)        Scm_Pair_cdr(e)
+#define Scm_caar(e)       Scm_car(Scm_car(e))
+#define Scm_cadr(e)       Scm_car(Scm_cdr(e))
+#define Scm_cdar(e)       Scm_cdr(Scm_car(e))
+#define Scm_cddr(e)       Scm_cdr(Scm_cdr(e))
+#define Scm_caadr(e)      Scm_car(Scm_cadr(e))
+#define Scm_caddr(e)      Scm_car(Scm_cddr(e))
+#define Scm_cdadr(e)      Scm_cdr(Scm_cadr(e))
+#define Scm_cdddr(e)      Scm_cdr(Scm_cddr(e))
+#define Scm_cadddr(e)     Scm_car(Scm_cdddr(e))
+#define Scm_set_car(e, v) Scm_Pair_set_head(e, v)
+#define Scm_set_cdr(e, v) Scm_Pair_set_tail(e, v)
 
 void Scm_init(size_t heap_size);
 enum ScmType Scm_type(ScmVal exp);
+
+ScmVal Scm_Nil_new();
 ScmVal Scm_Boolean_new(int value);
 ScmVal Scm_Pair_new(ScmVal head, ScmVal tail);
 ScmVal Scm_Pair_head(ScmVal pair);
@@ -67,19 +70,20 @@ ScmVal Scm_Port_peek_char(ScmVal port);
 ScmVal Scm_Port_write_char(ScmVal port, ScmVal c);
 ScmVal Scm_Port_write(ScmVal port, ScmVal obj);
 ScmVal Scm_Port_read(ScmVal port);
+void Scm_set_input_port(ScmVal iport);
+void Scm_set_output_port(ScmVal oport);
+ScmVal Scm_Env_new(ScmVal formals, ScmVal args, ScmVal parent);
+void Scm_define(ScmVal env, char*, ScmVal value);
+ScmVal Scm_lookup_symbol(ScmVal env, ScmVal symbol);
 ScmVal Scm_is_eof_obj(ScmVal port);
 ScmVal Scm_Closure_new(ScmVal formals, ScmVal body, ScmVal env);
 ScmVal Scm_Procedure_new(ScmVal(*fptr)(ScmVal));
 ScmVal Scm_parse(FILE* istream);
 void Scm_print(FILE* ostream, ScmVal exp);
 ScmVal Scm_eval(ScmVal exp, ScmVal env);
-ScmVal Scm_Env_new(ScmVal formals, ScmVal args, ScmVal parent);
-ScmVal Scm_Env_define_symbol(ScmVal env, ScmVal symbol, ScmVal value);
 ScmVal Scm_top_level_env();
-void Scm_define(ScmVal env, char*, ScmVal value);
-ScmVal Scm_Env_lookup_symbol(ScmVal env, ScmVal symbol);
 void Scm_gc();
-
+void Scm_print_mem_stats();
 #ifdef __cplusplus
   }
 #endif
