@@ -9,24 +9,25 @@
   extern "C" {
 #endif
 
-enum ScmType {
-  NIL,
-  BOOLEAN,
-  INTEGER,
-  SYMBOL,
-  CHARACTER,
-  STRING,
-  PAIR,
-  CLOSURE,
-  PROCEDURE,
-  UNBOUND,
-  UNSPECIFIED,
-  EOF_OBJ,
-  PORT,
-  INVALID
-};
-
 typedef void* ScmVal;
+
+enum ScmType {
+  kScmInvalidType = -1,
+  kScmNilType,
+  kScmBooleanType,
+  kScmIntegerType,
+  kScmSymbolType,
+  kScmCharacterType,
+  kScmStringType,
+  kScmPairType,
+  kScmClosureType,
+  kScmProcedureType,
+  kScmUnboundType,
+  kScmUnspecifiedType,
+  kScmEOFObjType,
+  kScmPortType,
+  kScmVectorType
+};
 
 extern ScmVal SCM_NIL;
 extern ScmVal SCM_TRUE;
@@ -70,6 +71,9 @@ ScmVal Scm_Port_peek_char(ScmVal port);
 ScmVal Scm_Port_write_char(ScmVal port, ScmVal c);
 ScmVal Scm_Port_write(ScmVal port, ScmVal obj);
 ScmVal Scm_Port_read(ScmVal port);
+ScmVal Scm_Vector_new(size_t size);
+void Scm_Vector_set(ScmVal vector, size_t idx, ScmVal value);
+ScmVal Scm_Vector_ref(ScmVal vector, size_t idx);
 void Scm_set_input_port(ScmVal iport);
 void Scm_set_output_port(ScmVal oport);
 ScmVal Scm_Env_new(ScmVal formals, ScmVal args, ScmVal parent);
