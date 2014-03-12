@@ -37,11 +37,11 @@ struct ScmHeader {
   ScmVal       pfwd;
 };
 
-struct ScmObj {
+struct ScmObject {
   struct ScmHeader header;
 };
 
-#define SCM_OBJ(val) SCM_PTR(struct ScmObj*, val)
+#define SCM_OBJ(val) SCM_PTR(struct ScmObject*, val)
 
 struct ScmPair {
   struct ScmHeader header;
@@ -62,7 +62,15 @@ struct ScmClosure {
  
 struct ScmProcedure {
   struct ScmHeader header;
-  ScmVal           (*fptr)(ScmVal);
+  int              arity;
+  union {
+    ScmVal (*fptr0)(void);
+    ScmVal (*fptr)(ScmVal);
+    ScmVal (*fptr1)(ScmVal);
+    ScmVal (*fptr2)(ScmVal, ScmVal);
+    ScmVal (*fptr3)(ScmVal, ScmVal, ScmVal);
+    ScmVal (*fptr_n)(int, ...);
+  };
 };
 
 #define SCM_PROC(val) SCM_PTR(struct ScmProcedure*, val)
@@ -203,7 +211,7 @@ int Scm_Heap_to_contains(ScmVal val) {
   return address >= ctx.heap.to && address < ctx.heap.to + ctx.heap.size;
 }
 
-int Scm_is_forwarded(ScmVal val) {
+int Scm_Object_is_forwarded(ScmVal val) {
   switch(Scm_type(val)) {
     case kScmPairType:
     case kScmProcedureType:
@@ -216,7 +224,7 @@ int Scm_is_forwarded(ScmVal val) {
   }
 }
 
-void Scm_mark_copy(ScmVal* pval, char** next) {
+void Scm_Object_mark_copy(ScmVal* pval, char** next) {
   enum ScmTag  tag;
   size_t       size;
   
@@ -225,7 +233,7 @@ void Scm_mark_copy(ScmVal* pval, char** next) {
   }
   
   if (Scm_Heap_contains(*pval) && !Scm_Heap_to_contains(*pval)) {
-    if (Scm_is_forwarded(*pval)) {
+    if (Scm_Object_is_forwarded(*pval)) {
       *pval = SCM_OBJ(*pval)->header.pfwd; // This reference points to a object in from space that has been moved, so update reference
     } else {
       tag   = SCM_TAG(*pval);                                    // Save Tag
@@ -246,28 +254,28 @@ void Scm_gc() {
 
   scan = next = ctx.heap.to;
 
-  Scm_mark_copy(&ctx.env, &next);
-  Scm_mark_copy(&ctx.iport, &next);
-  Scm_mark_copy(&ctx.oport, &next);
+  Scm_Object_mark_copy(&ctx.env, &next);
+  Scm_Object_mark_copy(&ctx.iport, &next);
+  Scm_Object_mark_copy(&ctx.oport, &next);
 
   for(int i = 0; i < ctx.stack.top; i++) {
-    Scm_mark_copy(ctx.stack.roots[i], &next);
+    Scm_Object_mark_copy(ctx.stack.roots[i], &next);
   }
 
   while(scan < next) {
     switch(Scm_type(scan)) {
       case kScmPairType:
-        Scm_mark_copy(&SCM_PAIR(scan)->head, &next);
-        Scm_mark_copy(&SCM_PAIR(scan)->tail, &next);
+        Scm_Object_mark_copy(&SCM_PAIR(scan)->head, &next);
+        Scm_Object_mark_copy(&SCM_PAIR(scan)->tail, &next);
         break;
       case kScmClosureType:
-        Scm_mark_copy(&SCM_CLOSURE(scan)->formals, &next);
-        Scm_mark_copy(&SCM_CLOSURE(scan)->body, &next);
-        Scm_mark_copy(&SCM_CLOSURE(scan)->env, &next);
+        Scm_Object_mark_copy(&SCM_CLOSURE(scan)->formals, &next);
+        Scm_Object_mark_copy(&SCM_CLOSURE(scan)->body, &next);
+        Scm_Object_mark_copy(&SCM_CLOSURE(scan)->env, &next);
         break;
       case kScmVectorType:
         for(i = 0; i < SCM_VECTOR(scan)->length; i++) {
-          Scm_mark_copy(&SCM_VECTOR(scan)->array[i], &next);
+          Scm_Object_mark_copy(&SCM_VECTOR(scan)->array[i], &next);
         }
         break;
       default:
@@ -353,11 +361,12 @@ void Scm_Pair_set_tail(ScmVal pair, ScmVal value) {
   SCM_PAIR(pair)->tail = value;
 }
 
-ScmVal Scm_Procedure_new(ScmVal (*fptr)(ScmVal)) {
+ScmVal Scm_Procedure_new(ScmVal (*fptr)(ScmVal), int arity) {
   struct ScmProcedure* proc;
   proc = ctx.heap.alloc(sizeof(struct ScmProcedure));
   proc->header.type  = kScmProcedureType;
   proc->header.pfwd  = NULL;
+  proc->arity = arity;
   proc->fptr  = fptr;
   return SCM_TAG_PTR(proc, kObjectTag);
 }
@@ -382,9 +391,9 @@ static int peekc(FILE* stream) {
 ScmVal Scm_Port_new(FILE* stream) {
   struct ScmPort* port;
   port = ctx.heap.alloc(sizeof(struct ScmPort));
-  port->header.type   = kScmPortType;
-  port->header.pfwd   = NULL;
-  port->stream        = stream;
+  port->header.type = kScmPortType;
+  port->header.pfwd = NULL;
+  port->stream      = stream;
   return SCM_TAG_PTR(port, kObjectTag);
 }
 
@@ -416,9 +425,9 @@ ScmVal Scm_Vector_new(size_t size) {
   int i;
   struct ScmVector* vector;
   vector = ctx.heap.alloc(sizeof(struct ScmVector) + size * sizeof(ScmVal));
-  vector->header.type   = kScmVectorType;
-  vector->header.pfwd   = NULL;
-  vector->length = size;
+  vector->header.type = kScmVectorType;
+  vector->header.pfwd = NULL;
+  vector->length      = size;
   for(i = 0; i < size; i++) {
     vector->array[i] = SCM_UNBOUND;
   }
@@ -987,38 +996,38 @@ void Scm_init(size_t heap_size) {
   SCM_EOF         = SCM_TAGGED(kScmEOFObjType, kImmediateTag);
   env             = Scm_Env_new(SCM_NIL, SCM_NIL, SCM_NIL);
 
-  Scm_define(env, "quit", Scm_Procedure_new(procedure_quit));
-  Scm_define(env, "connect", Scm_Procedure_new(procedure_socket_connect));
-  Scm_define(env, "listen", Scm_Procedure_new(procedure_socket_listen));
-  Scm_define(env, "gc", Scm_Procedure_new(procedure_gc));
-  Scm_define(env, "peek-char", Scm_Procedure_new(procedure_peek_char));
-  Scm_define(env, "eof-obj?", Scm_Procedure_new(procedure_is_eof_obj));
-  Scm_define(env, "current-input-port", Scm_Procedure_new(procedure_current_input_port));
-  Scm_define(env, "current-output-port", Scm_Procedure_new(procedure_current_output_port));
-  Scm_define(env, "vector-ref", Scm_Procedure_new(procedure_vector_ref));
-  Scm_define(env, "accept", Scm_Procedure_new(procedure_socket_accept));
-  Scm_define(env, "read-char", Scm_Procedure_new(procedure_read_char));
-  Scm_define(env, "close", Scm_Procedure_new(procedure_close));
-  Scm_define(env, "fdopen", Scm_Procedure_new(procedure_fdopen));
-  Scm_define(env, "write-char", Scm_Procedure_new(procedure_write_char));  
-  Scm_define(env, "eq?", Scm_Procedure_new(procedure_is_eq));
-  Scm_define(env, "time-ms", Scm_Procedure_new(procedure_time_ms));
-  Scm_define(env, "load", Scm_Procedure_new(procedure_load));
-  Scm_define(env, "interaction-environment", Scm_Procedure_new(procedure_interaction_env));
-  Scm_define(env, "write", Scm_Procedure_new(procedure_write));
-  Scm_define(env, "eval", Scm_Procedure_new(procedure_eval));
-  Scm_define(env, "read", Scm_Procedure_new(procedure_read));
-  Scm_define(env, "car", Scm_Procedure_new(procedure_car));
-  Scm_define(env, "cdr", Scm_Procedure_new(procedure_cdr));
-  Scm_define(env, "cons", Scm_Procedure_new(procedure_cons));
-  Scm_define(env, "symbol?", Scm_Procedure_new(procedure_is_symbol));
-  Scm_define(env, "pair?", Scm_Procedure_new(procedure_is_pair));
-  Scm_define(env, "null?", Scm_Procedure_new(procedure_is_null));
-  Scm_define(env, "+", Scm_Procedure_new(procedure_add));
-  Scm_define(env, "*", Scm_Procedure_new(procedure_mult));
-  Scm_define(env, "-", Scm_Procedure_new(procedure_sub));
-  Scm_define(env, "=", Scm_Procedure_new(procedure_eq));    
-  Scm_print_mem_stats();
+  Scm_define(env, "quit", Scm_Procedure_new(procedure_quit, 0));
+  Scm_define(env, "connect", Scm_Procedure_new(procedure_socket_connect, 2));
+  Scm_define(env, "listen", Scm_Procedure_new(procedure_socket_listen, 1));
+  Scm_define(env, "gc", Scm_Procedure_new(procedure_gc, 0));
+  Scm_define(env, "peek-char", Scm_Procedure_new(procedure_peek_char, 1));
+  Scm_define(env, "eof-obj?", Scm_Procedure_new(procedure_is_eof_obj, 1));
+  Scm_define(env, "current-input-port", Scm_Procedure_new(procedure_current_input_port, 0));
+  Scm_define(env, "current-output-port", Scm_Procedure_new(procedure_current_output_port, 0));
+  Scm_define(env, "vector-ref", Scm_Procedure_new(procedure_vector_ref, 2));
+  Scm_define(env, "accept", Scm_Procedure_new(procedure_socket_accept, 1));
+  Scm_define(env, "read-char", Scm_Procedure_new(procedure_read_char, 1));
+  Scm_define(env, "close", Scm_Procedure_new(procedure_close, 1));
+  Scm_define(env, "fdopen", Scm_Procedure_new(procedure_fdopen, 2));
+  Scm_define(env, "write-char", Scm_Procedure_new(procedure_write_char, 1));  
+  Scm_define(env, "eq?", Scm_Procedure_new(procedure_is_eq, 2));
+  Scm_define(env, "time-ms", Scm_Procedure_new(procedure_time_ms, 0));
+  Scm_define(env, "load", Scm_Procedure_new(procedure_load, 1));
+  Scm_define(env, "interaction-environment", Scm_Procedure_new(procedure_interaction_env, 0));
+  Scm_define(env, "write", Scm_Procedure_new(procedure_write, 2));
+  Scm_define(env, "eval", Scm_Procedure_new(procedure_eval, 2));
+  Scm_define(env, "read", Scm_Procedure_new(procedure_read, 1));
+  Scm_define(env, "car", Scm_Procedure_new(procedure_car, 1));
+  Scm_define(env, "cdr", Scm_Procedure_new(procedure_cdr, 1));
+  Scm_define(env, "cons", Scm_Procedure_new(procedure_cons, 2));
+  Scm_define(env, "symbol?", Scm_Procedure_new(procedure_is_symbol, 1));
+  Scm_define(env, "pair?", Scm_Procedure_new(procedure_is_pair, 1));
+  Scm_define(env, "null?", Scm_Procedure_new(procedure_is_null, 1));
+  Scm_define(env, "+", Scm_Procedure_new(procedure_add, 2));
+  Scm_define(env, "*", Scm_Procedure_new(procedure_mult, 2));
+  Scm_define(env, "-", Scm_Procedure_new(procedure_sub, 2));
+  Scm_define(env, "=", Scm_Procedure_new(procedure_eq, 2));    
+  //Scm_print_mem_stats();
 
   ctx.env       = env;
   ctx.stack.top = 0;

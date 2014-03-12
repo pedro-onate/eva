@@ -81,7 +81,7 @@ void Scm_define(ScmVal env, char*, ScmVal value);
 ScmVal Scm_lookup_symbol(ScmVal env, ScmVal symbol);
 ScmVal Scm_is_eof_obj(ScmVal port);
 ScmVal Scm_Closure_new(ScmVal formals, ScmVal body, ScmVal env);
-ScmVal Scm_Procedure_new(ScmVal(*fptr)(ScmVal));
+ScmVal Scm_Procedure_new(ScmVal(*fptr)(ScmVal), int arity);
 ScmVal Scm_parse(FILE* istream);
 void Scm_print(FILE* ostream, ScmVal exp);
 ScmVal Scm_eval(ScmVal exp, ScmVal env);
