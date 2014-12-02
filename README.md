@@ -1,63 +1,53 @@
-#EvaScheme v0.2.0
-
+#Eva v0.3.0
+A lightweight, embeddable, scheme implementation
 ##Build
-
 ```bash
 make
 ```
-
 ##Run
-
 ```bash
 ./eva
 ```
+##Integration Example
+example.c
+```c
+/*
+* example.c
+*/
 
-##REPL (read-evaluate-print-loop)
+#include "eva.h"
 
-Booleans
+/* Define a foreign function */
+es_val_t my_factorial(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+    if (!es_is_fixnum(argv[0])) {
+        return es_error_new(ctx, "expected numeric value");
+    }
 
-```scheme
-; Comments begin with ';' and continue until the end of the line
-eva> #t ; True
-#t
+    long n = es_to_fixnum(argv[0]);
+    long acc = 1;
+    while(n > 0) {
+        acc *= n--;
+    }
+    return es_fixnum_new(acc);
+}
 
-eva> #f ; False
-#f
+int main(int argc, char** argv) {
+    /* create context */
+    es_ctx_t* ctx = es_ctx_new(<heap size bytes>);
+    ...
+    /* register function  */
+    es_val_t fn = es_fn_new(ctx, 
+        1, /* number of arguments */
+        my_factorial
+    );
+    es_define(ctx, "factorial", fn);
+    
+    /* load and evaluate external scheme file */
+    es_load(ctx, "example.scm");
+}
 ```
-
-Integers
-
+example.scm
 ```scheme
-eva> 1 ; Integers evaluate to themselves
-1
-```
-
-Definitions
-
-```scheme
-eva> (define x 3) ; The value 3 will be assigned to the symbol x
-
-```
-
-Symbols
-
-```scheme
-eva> x ; Evaluates to 3 since we have bound the value 3 to it above
-3
-
-eva> 'x ; Quoting a value makes it evaluate to itself
-x
-```
-
-Functions
-
-```scheme
-; Defines a function named 'factorial' that takes a single argument 'n'
-eva> (define (factorial n) 
-        (if (= n 0)
-           1
-           (* n (factorial (- n 1)))))
-
-eva> (factorial 7) ; Applies the function 'factorial' to its argument '7'
-5040
+; example.scm
+(factorial 5)
 ```
