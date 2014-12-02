@@ -19,6 +19,7 @@ typedef enum   es_opcode       es_opcode_t;
 typedef struct es_bytecode     es_bytecode_t;
 typedef struct es_state        es_state_t;
 typedef struct stream          stream_t;
+typedef struct es_opcode_info  es_opcode_info_t;
 
 enum es_tag {
   es_obj_tag     = 0x0, /**< b000 - Heap allocated object */
@@ -30,18 +31,46 @@ enum es_tag {
   es_max_tag
 };
 
-enum { es_symtab_size = 65536 };
 enum { es_tag_bits = 3 };
 enum { es_tag_mask = (1 << es_tag_bits) - 1 };
 enum { es_val_payload_mask = ~(uintptr_t)es_tag_mask };
 enum { es_val_payload_bits = sizeof(uintptr_t) * 8 - es_tag_bits };
-enum { es_fixnum_min = -1 << es_val_payload_bits, es_fixnum_max = 1 << es_val_payload_bits };
 enum { es_default_alignment = 16 };
 enum { es_default_heap_size = 256 * 1000000 };
+enum { es_symtab_size = 65536 };
 
-/* VM Opcodes */
-enum es_opcode { HALT, CONST, POP, GLOBAL_REF, GLOBAL_SET, CLOSED_REF, CLOSED_SET, 
-  ARG_REF, ARG_SET, JMP, BF, CALL, TAIL_CALL, RETURN, CLOSURE };
+enum { 
+  es_fixnum_min = -1 << es_val_payload_bits, 
+  es_fixnum_max = 1 << es_val_payload_bits 
+};
+
+/* VM opcodes */
+enum es_opcode { HALT, CONST, POP, GLOBAL_REF, GLOBAL_SET, CLOSED_REF, 
+  CLOSED_SET, ARG_REF, ARG_SET, JMP, BF, CALL, TAIL_CALL, RETURN, CLOSURE };
+
+struct es_opcode_info {
+  es_opcode_t opcode;
+  const char* name;
+  int         arity;
+};
+
+static es_opcode_info_t opcode_info[] = {
+  { HALT,       "halt",       0 },
+  { CONST,      "const",      1 },
+  { POP,        "pop",        0 },  
+  { GLOBAL_REF, "global-ref", 1 },
+  { GLOBAL_SET, "global-set", 1 },
+  { CLOSED_REF, "closed-ref", 2 },
+  { CLOSED_SET, "closed-set", 2 },
+  { ARG_REF,    "arg-ref",    1 },
+  { ARG_SET,    "arg-set",    1 },
+  { JMP,        "jmp",        1 },
+  { BF,         "bf",         1 },
+  { CALL,       "call",       1 },
+  { TAIL_CALL,  "tail-call",  1 },
+  { RETURN,     "return",     0 },
+  { CLOSURE,    "closure",    1 }
+};
 
 struct es_obj {
   es_type_t type;    /**< The type of this object */
@@ -1166,44 +1195,16 @@ static void es_bytecode_mark_copy(struct es_heap* heap, es_val_t pval, char** ne
 //static void indent(int depth) { int i; for(i = 0; i < depth; i++) { printf("  "); } }
 
 static void print_inst(char* inst) {
-  switch(*inst) {
-  case CONST:      printf("const %d", inst[1]); break;
-  case CLOSURE:    printf("closure %d", inst[1]); break;
-  case POP:        printf("pop"); break;
-  case GLOBAL_REF: printf("global-ref %d", inst[1]); break;
-  case GLOBAL_SET: printf("global-set %d", inst[1]); break;
-  case CLOSED_REF: printf("closed-ref %d %d", inst[1], inst[2]); break;
-  case CLOSED_SET: printf("closed-set %d %d", inst[1], inst[2]); break;
-  case ARG_REF:    printf("arg-ref %d", inst[1]); break;
-  case ARG_SET:    printf("arg-set %d", inst[1]); break;
-  case JMP:        printf("jmp %d", inst[1]); break;
-  case BF:         printf("bf %d", inst[1]); break;
-  case RETURN:     printf("return"); break;
-  case CALL:       printf("call %d", inst[1]); break;
-  case TAIL_CALL:  printf("tail-call %d", inst[1]); break;
-  case HALT:       printf("halt"); break;
+  es_opcode_info_t* i = &opcode_info[(int)*inst];
+  switch(i->arity) {
+    case 0: printf("%s", i->name);                         break;
+    case 1: printf("%s %d", i->name, inst[1]);             break;
+    case 2: printf("%s %d %d", i->name, inst[1], inst[2]); break;
   }
 }
 
 static int inst_arity(es_opcode_t op) {
-  switch(op) {
-  case CONST:      return 1;
-  case CLOSURE:    return 1;
-  case POP:        return 0;
-  case GLOBAL_REF: return 1;
-  case GLOBAL_SET: return 1;
-  case CLOSED_REF: return 2;
-  case CLOSED_SET: return 2;
-  case ARG_REF:    return 1;
-  case ARG_SET:    return 1;
-  case JMP:        return 1;
-  case BF:         return 1;
-  case RETURN:     return 0;
-  case CALL:       return 1;
-  case TAIL_CALL:  return 1;
-  case HALT:       return 0;
-  }
-  return -1;
+  return opcode_info[op].arity;
 }
 
 static void es_bytecode_print(es_ctx_t* ctx, es_val_t val, es_val_t port) {
@@ -1938,14 +1939,6 @@ static int es_symtab_add_string(es_symtab_t* symtab, char* cstr) {
   return -1;
 }
 
-static void compile_args(es_ctx_t* ctx, es_val_t bc, es_val_t args, es_val_t scope) {
-  es_bytecode_t* p = es_to_bytecode(bc);
-  if (!es_is_nil(args)) {
-    compile(ctx, bc, es_car(args), 0, 0, scope);
-    compile_args(ctx, bc, es_cdr(args), scope);
-  }
-}
-
 static es_val_t flatten_args(es_ctx_t* ctx, es_val_t args) {
   if (es_is_nil(args))
     return es_nil;
@@ -2003,33 +1996,6 @@ static int lambda_arity(es_val_t formals, int* rest) {
   }
   *rest = es_is_nil(formals) ? 0 : 1;
   return arity;
-}
-
-static void compile_lambda(es_ctx_t* ctx, 
-                           es_val_t  bc, 
-                           es_val_t  formals, 
-                           es_val_t  body, 
-                           int       tail_pos, 
-                           int       next, 
-                           es_val_t  scope) {
-  es_bytecode_t* p = es_to_bytecode(bc);
-  int label1 = label(p); 
-  emit_jmp(p, -1);
-  int label2 = label(p);
-  scope = mkscope(ctx, formals, scope);
-  while(!es_is_nil(es_cdr(body))) {
-    compile(ctx, bc, es_car(body), 0, 0, scope);
-    emit_pop(p);
-    body = es_cdr(body);
-  }
-  compile(ctx, bc, es_car(body), 1, RETURN, scope);
-  int label3 = label(p);
-  int rest;
-  int arity = lambda_arity(formals, &rest);
-  es_val_t proc = es_proc_new(ctx, arity, rest, label2);
-  emit_closure(p, alloc_const(p, proc));
-  p->inst[label1 + 1] = label3 - label1;
-  if (tail_pos) emit_byte(p, next);
 }
 
 static void compile(es_ctx_t* ctx, 
@@ -2134,6 +2100,41 @@ static void compile(es_ctx_t* ctx,
   } else {
     emit_const(p, alloc_const(p, exp));
     if (tail_pos) emit_byte(p, next);
+  }
+}
+
+static void compile_lambda(es_ctx_t* ctx, 
+                           es_val_t  bc, 
+                           es_val_t  formals, 
+                           es_val_t  body, 
+                           int       tail_pos, 
+                           int       next, 
+                           es_val_t  scope) {
+  es_bytecode_t* p = es_to_bytecode(bc);
+  int label1 = label(p); 
+  emit_jmp(p, -1);
+  int label2 = label(p);
+  scope = mkscope(ctx, formals, scope);
+  while(!es_is_nil(es_cdr(body))) {
+    compile(ctx, bc, es_car(body), 0, 0, scope);
+    emit_pop(p);
+    body = es_cdr(body);
+  }
+  compile(ctx, bc, es_car(body), 1, RETURN, scope);
+  int label3 = label(p);
+  int rest;
+  int arity = lambda_arity(formals, &rest);
+  es_val_t proc = es_proc_new(ctx, arity, rest, label2);
+  emit_closure(p, alloc_const(p, proc));
+  p->inst[label1 + 1] = label3 - label1;
+  if (tail_pos) emit_byte(p, next);
+}
+
+static void compile_args(es_ctx_t* ctx, es_val_t bc, es_val_t args, es_val_t scope) {
+  es_bytecode_t* p = es_to_bytecode(bc);
+  if (!es_is_nil(args)) {
+    compile(ctx, bc, es_car(args), 0, 0, scope);
+    compile_args(ctx, bc, es_cdr(args), scope);
   }
 }
 
