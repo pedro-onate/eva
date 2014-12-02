@@ -2,7 +2,7 @@ release : eva.h eva.c
 	gcc -O3 -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-label -o eva eva.c main.c
 
 debug : eva.h eva.c
-	clang -g -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-label -o eva eva.c main.c
+	gcc -g -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-label -o eva eva.c main.c
 
 profile : eva.h eva.c
 	gcc -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-label -o eva eva.c main.c -pg

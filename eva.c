@@ -15,7 +15,6 @@ typedef struct es_heap         es_heap_t;
 typedef struct es_roots        es_roots_t;
 typedef struct es_frame        es_frame_t;
 typedef struct es_symtab       es_symtab_t;
-typedef struct es_symtab_entry es_symtab_entry_t;
 typedef enum   es_opcode       es_opcode_t;
 typedef struct es_bytecode     es_bytecode_t;
 typedef struct es_state        es_state_t;
@@ -31,7 +30,7 @@ enum es_tag {
   es_max_tag
 };
 
-enum { es_max_strings = 65536 };
+enum { es_symtab_size = 65536 };
 enum { es_tag_bits = 3 };
 enum { es_tag_mask = (1 << es_tag_bits) - 1 };
 enum { es_val_payload_mask = ~(uintptr_t)es_tag_mask };
@@ -59,15 +58,9 @@ struct es_heap {
   size_t requested;  /**< Requested heap size in bytes */
 };
 
-struct es_symtab_entry {
-  int   id;
-  char* string;
-};
-
 struct es_symtab {
-  es_symtab_entry_t table[es_max_strings];
-  int               next_row;
-  int               next_id;
+  char* table[es_symtab_size];
+  int   next_id;
 };
 
 struct es_frame {
@@ -222,10 +215,11 @@ static void*     es_heap_alloc(es_heap_t* heap, size_t size);
 static int       es_ceil_to(int n, int u);
 static void      es_heap_init(es_heap_t* heap, size_t size);
 static int       es_heap_to_contains(es_heap_t* heap, es_val_t val);
+static void      es_symtab_init(es_symtab_t* symtab);
 static char*     es_symtab_find_by_id(es_symtab_t* symtab, int id);
 static int       es_symtab_id_by_string(es_symtab_t* symtab, char* cstr);
 static int       es_symtab_find_or_create(es_symtab_t* symtab, char* cstr);
-static int       es_symtab_add_string(es_symtab_t* symtab, char* cstr, int id);
+static int       es_symtab_add_string(es_symtab_t* symtab, char* cstr);
 static size_t    es_vec_size_of(es_val_t vecval);
 static es_val_t  lookup_binding(es_val_t _env, es_val_t symbol);
 static stream_t* stream_open(FILE* handle, char* buf, size_t len);
@@ -309,6 +303,7 @@ static void es_ctx_init(es_ctx_t* ctx, size_t heap_size) {
   es_heap_init(&ctx->heap, heap_size);
   ctx->env      = es_env_new(ctx, es_nil);
   ctx->bytecode = es_bytecode_new(ctx);
+  es_symtab_init(&ctx->symtab);
   es_symbol_intern(ctx, "define");
   es_symbol_intern(ctx, "if");
   es_symbol_intern(ctx, "begin");
@@ -1905,58 +1900,40 @@ static void es_until_terminator(stream_t* stream) {
 }
 
 static void es_symtab_init(es_symtab_t* symtab) {
-  int i;
-  symtab->next_id  = 0;
-  symtab->next_row = 0;
-  for(i = 0; i < es_max_strings; i++) {
-    symtab->table[i].string = NULL;
-    symtab->table[i].id     = -1;
-  }
+  symtab->next_id = 0;
 }
 
 static char* es_symtab_find_by_id(es_symtab_t* symtab, int id) {
-  int i;
-  for(i = 0; i < symtab->next_row; i++) {
-    if (symtab->table[i].id == id) {
-      return symtab->table[i].string;
-    }
-  }
-  return NULL;
+  return symtab->table[id];
 }
 
 static int es_symtab_id_by_string(es_symtab_t* symtab, char* cstr) {
-  int i;
-  for(i = 0; i < symtab->next_row; i++) {
-    if (strcmp(symtab->table[i].string, cstr) == 0) {
-      return symtab->table[i].id;
+  for(int i = 0; i < symtab->next_id; i++) {
+    if (strcmp(symtab->table[i], cstr) == 0) {
+      return i;
     }
   }
   return -1;
 }
 
 static int es_symtab_count(es_symtab_t* symtab) { 
-  return symtab->next_row; 
+  return symtab->next_id; 
 }
 
 static int es_symtab_find_or_create(es_symtab_t* symtab, char* cstr) {
   int id = es_symtab_id_by_string(symtab, cstr);
   if (id < 0) {
-    return es_symtab_add_string(symtab, cstr, symtab->next_id++);
+    return es_symtab_add_string(symtab, cstr);
   }
   return id;
 }
 
-static int es_symtab_add_string(es_symtab_t* symtab, char* cstr, int id) {
-  char* newstr;
-  if (symtab->next_row < es_max_strings) {
-    newstr = malloc(strlen(cstr) + 1);
+static int es_symtab_add_string(es_symtab_t* symtab, char* cstr) {
+  if (symtab->next_id < es_symtab_size) {
+    char* newstr = malloc(strlen(cstr) + 1);
     strcpy(newstr, cstr);
-    symtab->table[symtab->next_row].string = newstr;
-    symtab->table[symtab->next_row].id     = id;
-    if (id > symtab->next_id)
-      symtab->next_id = id + 1;
-    symtab->next_row++;
-    return id;
+    symtab->table[symtab->next_id] = newstr;
+    return symtab->next_id++;
   }
   return -1;
 }

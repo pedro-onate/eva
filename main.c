@@ -1,6 +1,6 @@
 #include "eva.h"
 
-enum { MB = 10000000 };
+enum { MB = 1000000 };
 
 int main() {
   es_ctx_t* ctx = es_ctx_new(500 * MB);
