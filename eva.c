@@ -128,10 +128,16 @@ struct es_string {
   char     value[];
 };
 
+typedef struct es_slot {
+  es_val_t val;
+  es_val_t sym;
+} es_slot_t;
+
 struct es_env {
   es_obj_t  base;
-  es_val_t  parent;
-  es_val_t  bindings;
+  int       count;
+  int       size;
+  es_slot_t slots[65536];
 };
 
 struct es_args {
@@ -305,12 +311,14 @@ static void      compile(es_ctx_t* ctx, es_val_t p, es_val_t exp, int tail_pos, 
 static void      compile_args(es_ctx_t* ctx, es_val_t p, es_val_t exp, es_val_t scope);
 static void      compile_lambda(es_ctx_t* ctx, es_val_t bc, es_val_t formals, es_val_t body, int tail_pos, int next, es_val_t scope);
 
-const es_val_t es_nil      = es_tagged_val(es_nil_type, es_value_tag);
-const es_val_t es_true     = es_tagged_val(1, es_boolean_tag);
-const es_val_t es_false    = es_tagged_val(0, es_boolean_tag);
-const es_val_t es_eof_obj  = es_tagged_val(es_eof_obj_type, es_value_tag);
-const es_val_t es_void     = es_tagged_val(es_void_type, es_value_tag);
-const es_val_t es_unbound  = es_tagged_val(es_unbound_type, es_value_tag);
+const es_val_t es_nil       = es_tagged_val(es_nil_type, es_value_tag);
+const es_val_t es_true      = es_tagged_val(1, es_boolean_tag);
+const es_val_t es_false     = es_tagged_val(0, es_boolean_tag);
+const es_val_t es_eof_obj   = es_tagged_val(es_eof_obj_type, es_value_tag);
+const es_val_t es_void      = es_tagged_val(es_void_type, es_value_tag);
+const es_val_t es_unbound   = es_tagged_val(es_unbound_type, es_value_tag);
+const es_val_t es_defined   = es_tagged_val(es_defined_type, es_value_tag);
+const es_val_t es_undefined = es_tagged_val(es_undefined_type, es_value_tag);
 
 static const es_val_t symbol_define = es_tagged_val(0, es_symbol_tag);
 static const es_val_t symbol_if     = es_tagged_val(1, es_symbol_tag);
@@ -330,7 +338,7 @@ ES_API es_ctx_t* es_ctx_new(size_t heap_size) {
 
 static void es_ctx_init(es_ctx_t* ctx, size_t heap_size) {
   es_heap_init(&ctx->heap, heap_size);
-  ctx->env      = es_env_new(ctx, es_nil);
+  ctx->env      = es_env_new(ctx, 65536);
   ctx->bytecode = es_bytecode_new(ctx);
   es_symtab_init(&ctx->symtab);
   es_symbol_intern(ctx, "define");
@@ -537,7 +545,7 @@ ES_API void es_print(es_ctx_t* ctx, es_val_t val, es_val_t oport) {
   case es_error_type:        es_error_print(ctx, val, oport);              break;
   case es_bytecode_type:     es_bytecode_print(ctx, val, oport);           break;
   case es_proc_type:         es_proc_print(ctx, val, oport);               break;
-  case es_env_type:          es_print(ctx, es_to_env(val)->bindings, oport); break;
+  //case es_env_type:          es_print(ctx, es_to_env(val)->bindings, oport); break;
   case es_invalid_type:
   default:
     break;
@@ -993,7 +1001,15 @@ static void es_symbol_print(es_ctx_t* ctx, es_val_t sym, es_val_t port) {
 //=================
 ES_API int es_is_unbound(es_val_t val) { 
   return es_unbound_type == es_type_of(val);
-} 
+}
+
+ES_API int es_is_defined(es_val_t val) { 
+  return es_defined_type == es_type_of(val);
+}
+
+ES_API int es_is_undefined(es_val_t val) { 
+  return es_undefined_type == es_type_of(val);
+}  
 
 ES_API int es_is_void(es_val_t val) { 
   return es_void_type == es_type_of(val); 
@@ -1076,13 +1092,10 @@ static void es_vec_print(es_ctx_t* ctx, es_val_t self, es_val_t port) {
 //=================
 // Environment
 //=================
-es_val_t es_env_new(es_ctx_t* ctx, es_val_t parent){
-  es_env_t* env;
-  gc_root(ctx, parent);
-  env = es_alloc(ctx, es_env_type, sizeof(es_env_t));
-  env->parent = parent;
-  env->bindings = es_nil;
-  gc_unroot(ctx, 1);
+es_val_t es_env_new(es_ctx_t* ctx, int size){
+  es_env_t* env = es_alloc(ctx, es_env_type, sizeof(es_env_t) + sizeof(es_slot_t) * size);
+  env->count = 0;
+  env->size  = size;
   return es_tagged_obj(env);
 }
 
@@ -1092,22 +1105,39 @@ ES_API es_env_t* es_to_env(es_val_t val) {
 
 static void es_env_mark_copy(struct es_heap* heap, es_val_t pval, char** next) {
   es_env_t* env = es_to_env(pval);
-  es_mark_copy(heap, &env->parent, next);
-  es_mark_copy(heap, &env->bindings, next);
+  for(int i = 0; i < env->count; i++) {
+    es_mark_copy(heap, &env->slots[i].val, next);
+  }
 }
 
-ES_API es_val_t es_define_symbol(es_ctx_t* ctx, es_val_t env, es_val_t symbol, es_val_t value) {
-  es_val_t res;
-  gc_root3(ctx, env, symbol, value);
-  res = lookup_binding(env, symbol);
-  if (!es_is_unbound(res)) {
-    es_set_cdr(res, value);
-  } else {
-    res = es_cons(ctx, symbol, value);
-    res = es_cons(ctx, res, es_to_env(env)->bindings);
-    es_to_env(env)->bindings = res;
+static int es_env_loc(es_val_t _env, es_val_t sym) {
+  es_env_t* env = es_to_env(_env);
+  for(int i = 0; i < env->count; i++) {
+    if (es_is_eq(env->slots[i].sym, sym)) {
+      return i;
+    }
   }
-  gc_unroot(ctx, 3);
+  return -1;
+}
+
+static int es_env_reserve_loc(es_val_t _env, es_val_t sym, es_val_t init) {
+  es_env_t* env = es_to_env(_env);
+  int loc = es_env_loc(_env, sym);
+  if (loc > -1) {
+    if (es_is_undefined(env->slots[loc].val)) {
+      env->slots[loc].val = init;
+    }
+    return loc;
+  }
+  env->slots[env->count].sym = sym;
+  env->slots[env->count].val = init;
+  return env->count++;
+}
+
+ES_API es_val_t es_define_symbol(es_ctx_t* ctx, es_val_t _env, es_val_t sym, es_val_t val) {
+  es_env_t* env = es_to_env(_env);
+  int loc = es_env_reserve_loc(_env, sym, es_defined);
+  env->slots[loc].val = val;
   return es_void;
 }
 
@@ -1115,21 +1145,29 @@ ES_API es_val_t es_define(es_ctx_t* ctx, char* symbol, es_val_t val) {
   return es_define_symbol(ctx, ctx->env, es_symbol_intern(ctx, symbol), val);
 }
 
-ES_API es_val_t es_lookup_symbol(es_ctx_t* ctx, es_val_t env, es_val_t symbol) {
-  es_val_t binding = lookup_binding(env, symbol);
-  return !es_is_unbound(binding) ? es_cdr(binding) : es_error_new(ctx, "unbound symbol");
+ES_API es_val_t es_lookup_symbol(es_ctx_t* ctx, es_val_t _env, es_val_t sym) {
+  es_val_t val  = es_unbound;
+  es_env_t* env = es_to_env(_env);
+  int loc = es_env_loc(_env, sym);
+  if (loc > -1) {
+    val = env->slots[loc].val; 
+  }
+  return es_is_undefined(val) || es_is_defined(val) ? es_error_new(ctx, "unbound symbol") : val;
 }
 
-static es_val_t lookup_binding(es_val_t _env, es_val_t symbol) {
-  es_env_t* env = es_to_env(_env);
-  es_val_t binding = es_assq(env->bindings, symbol);
-  if (!es_is_nil(binding)) {
-    return binding;
-  } else if (!es_is_nil(env->parent)) {
-    return lookup_binding(env->parent, symbol);
-  } else {
-    return es_unbound;
+es_val_t es_env_set(es_ctx_t* ctx, es_val_t env, int slot, es_val_t val) {
+  es_env_t* e = es_to_env(env);
+  if (es_is_undefined(e->slots[slot].val)) {
+    return es_error_new(ctx, "unbound symbol");
   }
+  e->slots[slot].val = val;
+  return es_void;
+}
+
+es_val_t es_env_ref(es_ctx_t* ctx, es_val_t env, int slot) {
+  es_env_t* e = es_to_env(env);
+  es_val_t val = e->slots[slot].val;
+  return !es_is_undefined(val) ? val : es_error_new(ctx, "unbound symbol");
 }
 
 static es_val_t es_args_new(es_ctx_t* ctx, es_val_t parent, int arity, int rest, int argc, es_val_t* argv) {
@@ -1379,18 +1417,6 @@ ES_API int es_list_length(es_val_t list) {
     i++; 
   }
   return i;
-}
-
-ES_API es_val_t es_assq(es_val_t lst, es_val_t key) {
-  es_val_t e;
-  while(!es_is_nil(lst)) {
-    e = es_car(lst);
-    if (es_is_eq(es_car(e), key)) {
-      return e;
-    }
-    lst = es_cdr(lst);
-  }
-  return es_nil;
 }
 
 static int strcatc(char* buf, int len, int c, char** pbuf) {
@@ -2012,14 +2038,14 @@ static void compile(es_ctx_t* ctx,
       if (es_is_eq(op, symbol_define)) {
         if (es_is_symbol(es_car(args))) {
           compile(ctx, bc, es_cadr(args), 0, 0, scope);
-          emit_global_set(p, alloc_const(p, es_car(args)));
+          emit_global_set(p, es_env_reserve_loc(ctx->env, es_car(args), es_defined));
           if (tail_pos) emit_byte(p, next);
         } else if (es_is_pair(es_car(args))) {
           es_val_t sym     = es_caar(args);
           es_val_t formals = es_cdar(args);
           es_val_t body    = es_cdr(args);
           compile_lambda(ctx, bc, formals, body, 0, 0, scope);
-          emit_global_set(p, alloc_const(p, sym));
+          emit_global_set(p, es_env_reserve_loc(ctx->env, sym, es_defined));
           if (tail_pos) emit_byte(p, next);
         } else if (es_is_eq(op, symbol_begin)) {
           while(!es_is_nil(es_cdr(args))) {
@@ -2064,7 +2090,7 @@ static void compile(es_ctx_t* ctx,
           else
             emit_closed_set(p, depth, idx);
         else
-          emit_global_set(p, alloc_const(p, es_car(args)));
+          emit_global_set(p, es_env_reserve_loc(ctx->env, es_car(args), es_undefined));
         if (tail_pos) emit_byte(p, next);
       } else if (es_is_eq(op, symbol_quote)) {
         emit_const(p, alloc_const(p, es_car(args)));
@@ -2095,7 +2121,7 @@ static void compile(es_ctx_t* ctx,
       else
         emit_closed_ref(p, depth, idx);
     else
-      emit_global_ref(p, alloc_const(p, exp));
+      emit_global_ref(p, es_env_reserve_loc(ctx->env, exp, es_undefined));
     if (tail_pos) emit_byte(p, next);
   } else {
     emit_const(p, alloc_const(p, exp));
@@ -2202,12 +2228,12 @@ static es_val_t es_vm(es_ctx_t* ctx, int start, es_val_t genv) {
       ip += *(ip + 1);
       next();
     GLOBAL_REF: case GLOBAL_REF:
-      push(es_lookup_symbol(ctx, get_genv(), get_const((int)*(ip + 1)))); 
+      push(es_env_ref(ctx, get_genv(), (int)*(ip + 1))); 
       ip += 2; 
       next();
     GLOBAL_SET: case GLOBAL_SET: { 
-      es_val_t v = pop(); 
-      push(es_define_symbol(ctx, get_genv(), get_const((int)*(ip + 1)), v)); 
+      es_val_t v = pop();
+      push(es_env_set(ctx, get_genv(), (int)*(ip + 1), v)); 
       ip += 2;
       next();
     }
@@ -2337,15 +2363,11 @@ ES_API es_val_t es_eval(es_ctx_t* ctx, es_val_t exp, es_val_t env) {
   //struct timeval t0, t1, dt;
   es_val_t res;
   int start = es_compile(ctx, exp);
-  //es_print(ctx, ctx->bytecode, ctx->oport);
-  //es_port_printf(ctx, ctx->oport, "\n");
-
   //gettimeofday(&t0, NULL);
   res = es_vm(ctx, start, ctx->env);  
   //gettimeofday(&t1, NULL);
   //timeval_subtract(&dt, &t1, &t0);
   //printf("time: %f\n", dt.tv_sec * 1000.0 + dt.tv_usec / 1000.0);
-
   return res;
 }
 

@@ -74,7 +74,9 @@ enum es_type {
   es_pair_type,         /**< Type of pairs. */
   es_eof_obj_type,      /**< Type of the EOF object */
   es_closure_type,      /**< Type of closures. */
-  es_unbound_type,      /**< Type of undefined symbols. */
+  es_unbound_type,
+  es_defined_type,      /**< Type of undefined symbols. */
+  es_undefined_type,
   es_void_type,         /**< Unspecified type. */
   es_port_type,         /**< Type of port objects. */
   es_vector_type,       /**< Vector type. */
@@ -92,6 +94,8 @@ extern const es_val_t es_false;
 extern const es_val_t es_eof_obj;
 extern const es_val_t es_void;
 extern const es_val_t es_unbound;
+extern const es_val_t es_defined;
+extern const es_val_t es_undefined;
 
 es_ctx_t*     es_ctx_new(size_t heap_size);
 void          es_ctx_free(es_ctx_t* ctx);
@@ -154,7 +158,7 @@ es_val_t      es_port_new(es_ctx_t* ctx, FILE* stream);
 es_val_t      es_bytecode_new(es_ctx_t* ctx);
 es_val_t      es_error_new(es_ctx_t* ctx, char* errstr);
 es_val_t      es_symbol_new(int id);
-es_val_t      es_env_new(es_ctx_t* ctx, es_val_t parent);
+es_val_t      es_env_new(es_ctx_t* ctx, int size);
 es_val_t      es_fn_new(es_ctx_t* ctx, int arity, es_pcfn_t pcfn);
 
 es_val_t      es_number_add(es_val_t a, es_val_t b);

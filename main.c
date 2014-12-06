@@ -3,7 +3,7 @@
 enum { MB = 1000000 };
 
 int main() {
-  es_ctx_t* ctx = es_ctx_new(500 * MB);
+  es_ctx_t* ctx = es_ctx_new(128 * MB);
 
   es_ctx_set_iport(ctx, es_port_new(ctx, stdin));
   es_ctx_set_oport(ctx, es_port_new(ctx, stdout));
