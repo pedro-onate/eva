@@ -48,7 +48,6 @@ typedef struct es_port    es_port_t;
 typedef struct es_error   es_error_t;
 typedef struct es_env     es_env_t;
 typedef struct es_args    es_args_t;
-typedef union  es_pfn     es_pfn_t;
 
 /**
  * Wrapper for first-class objects
@@ -61,7 +60,7 @@ union es_val {
 /*
  * Function pointer for native c functions
  */
-typedef es_val_t (*es_pcfn_t)(es_ctx_t* ctx, int argc, es_val_t* argv);
+typedef es_val_t (*es_pfn_t)(es_ctx_t* ctx, int argc, es_val_t* argv);
 
 enum es_type {
   es_invalid_type = -1, /**< Invalid type. */
@@ -159,7 +158,7 @@ es_val_t      es_bytecode_new(es_ctx_t* ctx);
 es_val_t      es_error_new(es_ctx_t* ctx, char* errstr);
 es_val_t      es_symbol_new(int id);
 es_val_t      es_env_new(es_ctx_t* ctx, int size);
-es_val_t      es_fn_new(es_ctx_t* ctx, int arity, es_pcfn_t pcfn);
+es_val_t      es_fn_new(es_ctx_t* ctx, int arity, es_pfn_t pcfn);
 
 es_val_t      es_number_add(es_val_t a, es_val_t b);
 es_val_t      es_number_sub(es_val_t a, es_val_t b);
@@ -171,13 +170,12 @@ es_val_t      es_pair_car(es_val_t pair);
 es_val_t      es_pair_cdr(es_val_t pair);
 void          es_pair_set_head(es_val_t pair, es_val_t val);
 void          es_pair_set_tail(es_val_t pair, es_val_t val);
-es_val_t      es_assq(es_val_t lst, es_val_t key);
 es_val_t      es_list_argv(es_ctx_t* ctx, int argc, es_val_t* argv);
 int           es_list_length(es_val_t list);
 
-void          es_vec_set(es_val_t vector, int idx, es_val_t element);
-es_val_t      es_vec_ref(es_val_t vector, int idx);
-int           es_vec_len(es_val_t vector);
+void          es_vec_set(es_val_t vec, int idx, es_val_t val);
+es_val_t      es_vec_ref(es_val_t vec, int idx);
+int           es_vec_len(es_val_t vec);
 
 void          es_port_close(es_val_t port);
 es_val_t      es_port_read(es_ctx_t* ctx, es_val_t port);
@@ -185,7 +183,10 @@ es_val_t      es_port_read_char(es_val_t port);
 es_val_t      es_port_peek_char(es_val_t port);
 int           es_port_getc(es_val_t port);
 int           es_port_peekc(es_val_t port);
+void          es_port_mark(es_val_t port);
+void          es_port_reset(es_val_t port);
 void          es_port_close(es_val_t port);
+int           es_port_nbytes(es_val_t port);
 int           es_port_linum(es_val_t port);
 int           es_port_colnum(es_val_t port);
 es_val_t      es_port_write_char(es_val_t port, es_val_t c);
@@ -198,7 +199,8 @@ es_val_t      es_symbol_to_string(es_ctx_t* ctx, es_val_t val);
 es_val_t      es_read(es_ctx_t* ctx, es_val_t port);
 void          es_print(es_ctx_t* ctx, es_val_t exp, es_val_t port);
 
-es_val_t      es_define(es_ctx_t* ctx, char* symbol, es_val_t value);
+es_val_t      es_define(es_ctx_t* ctx, char* name, es_val_t value);
+es_val_t      es_define_fn(es_ctx_t* ctx, char* name, es_pfn_t fn, int arity);
 es_val_t      es_define_symbol(es_ctx_t* ctx, es_val_t env, es_val_t symbol, es_val_t value);
 es_val_t      es_lookup_symbol(es_ctx_t* ctx, es_val_t env, es_val_t symbol);
 
