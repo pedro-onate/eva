@@ -23,7 +23,6 @@ typedef struct es_symtab       es_symtab_t;
 typedef enum   es_opcode       es_opcode_t;
 typedef struct es_bytecode     es_bytecode_t;
 typedef struct es_state        es_state_t;
-typedef struct stream          stream_t;
 typedef struct es_inst         es_inst_t;
 typedef struct es_opcode_info  es_opcode_info_t;
 
@@ -240,30 +239,6 @@ struct es_bytecode {
   int        ip;
 };
 
-typedef struct state {
-  int mark;
-  int nbytes;
-  int linum;
-  int colnum;
-} state_t;
-
-struct stream {
-  FILE*   handle; /* stream */
-  char*   srec;   /* stream record */
-  size_t  len;    /* length of stream record */
-  int     mark;   /* true if stream record active */
-  int     tail;   /* last recorded char in stream record */
-  int     cur;    /* stream record cursor */
-  int     eof;    /* eof flag */
-  int     error;
-  int     stack[256];
-  int     sp;
-  int     nbytes;
-  int     linum;
-  int     colnum;
-  state_t sss[256];
-};
-
 #define es_tagged_val(v, tag) ((es_val_t){ .val = (((v) << es_tag_bits) | tag) })
 #define es_tagged_obj(o)      ((es_val_t){ .obj = (es_obj_t*)(o) })
 #define es_tag(v)             ((v).val & es_tag_mask)
@@ -295,23 +270,6 @@ static int       es_symtab_find_or_create(es_symtab_t* symtab, char* cstr);
 static int       es_symtab_add_string(es_symtab_t* symtab, char* cstr);
 static size_t    es_vec_size_of(es_val_t vecval);
 static es_val_t  lookup_binding(es_val_t _env, es_val_t symbol);
-static stream_t* stream_open(FILE* handle, char* buf, size_t len);
-static void      stream_mark(stream_t* s);
-static void      stream_resume(stream_t* s);
-static int       stream_stack(stream_t* s);
-static void      stream_reset(stream_t* s);
-static int       stream_getc(stream_t* s);
-static char*     stream_record(stream_t* s);
-static int       stream_reclen(stream_t* s);
-static int       stream_copybuf(stream_t*s, char* buf, size_t len);
-static int       stream_peekc(stream_t* s);
-static void      stream_free(stream_t* s);
-static int       stream_linum(stream_t* s);
-static int       stream_colnum(stream_t* s);
-static int       matchc(es_val_t port, int c);
-static int       matchstr(es_val_t port, char* cstr);
-static int       acceptc(es_val_t port, int c);
-static int       acceptfn(es_val_t port, int (*fn)(int));
 static int       timeval_subtract (struct timeval *result, struct timeval *x, struct timeval *y);
 static es_val_t  es_parse(es_ctx_t* ctx, es_val_t port);
 static es_val_t  parse_exp(es_ctx_t* ctx, es_val_t port, int depth, int qq);
