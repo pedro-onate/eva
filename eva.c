@@ -272,17 +272,7 @@ static size_t    es_vec_size_of(es_val_t vecval);
 static es_val_t  lookup_binding(es_val_t _env, es_val_t symbol);
 static int       timeval_subtract (struct timeval *result, struct timeval *x, struct timeval *y);
 static es_val_t  es_parse(es_ctx_t* ctx, es_val_t port);
-static es_val_t  parse_exp(es_ctx_t* ctx, es_val_t port, int depth, int qq);
-static es_val_t  parse_list(es_ctx_t* ctx, es_val_t port, int depth, int dot, int qq);
-static es_val_t  parse_vector(es_ctx_t* ctx, es_val_t port, int depth, int qq);
-static es_val_t  parse_atom(es_ctx_t* ctx, es_val_t port, int depth);
-static es_val_t  parse_hashform(es_ctx_t* ctx, es_val_t port, int depth, int qq);
-static es_val_t  parse_string(es_ctx_t* ctx, es_val_t port, int depth);
-static es_val_t  parse_symnum(es_ctx_t* ctx, es_val_t port, int depth);
-static es_val_t  parse_char(es_val_t port, int depth);
-static void      accept_space(es_val_t port);
-static int       accept_whitespace(es_val_t port);
-static int       accept_comment(es_val_t port);
+static es_val_t _parse(es_ctx_t* ctx, es_val_t port);
 static void      es_fixnum_print(es_ctx_t* ctx, es_val_t fixnum, es_val_t oport);
 static void      es_char_print(es_ctx_t* ctx, es_val_t clo, es_val_t oport);
 static void      es_string_print(es_ctx_t* ctx, es_val_t self, es_val_t oport);
@@ -828,7 +818,8 @@ ES_API es_val_t es_read(es_ctx_t* ctx, es_val_t port) {
 }
 
 ES_API es_val_t es_port_read(es_ctx_t* ctx, es_val_t port) {
-  return es_parse(ctx, port);
+  //return es_parse(ctx, port);
+  return _parse(ctx, port);
 }
 
 ES_API int es_port_getc(es_val_t port) {
@@ -1634,6 +1625,107 @@ static es_val_t es_parse(es_ctx_t* ctx, es_val_t port) {
   }
 }
 
+enum pstate { pstate_exp, pstate_list, pstate_list_node, pstate_list_cons };
+
+static es_val_t _parse(es_ctx_t* ctx, es_val_t port) {
+  enum pstate  s[256];
+  es_val_t     v[256];
+  char         t[256];
+  enum pstate* ps = s;
+  es_val_t*    pv = v;
+  char*        pt = t;
+
+  *ps++ = pstate_exp;
+  while(ps-- > s) {
+    switch(*ps) {
+    case pstate_exp:
+      printf("exp\n");
+      while(isspace(ppeekc(port))) { pgetc(port); }
+      if (ppeekc(port) == '(') {
+        pgetc(port);
+        *ps++ = pstate_list;
+      } else {
+        while(!strchr(" \t\n)", ppeekc(port))) { *pt++ = pgetc(port); }
+        *pt = '\0';
+        *pv++ = es_symbol_intern(ctx, pt);
+      }
+      break;
+    case pstate_list:
+      printf("list\n");
+      if (ppeekc(port) == ')') {
+        pgetc(port);
+        *pv++ = es_nil;
+      } else {
+        *ps++ = pstate_list_node;
+        *ps++ = pstate_exp;
+      }
+      break;
+    case pstate_list_node:
+      printf("list_node\n");
+      *ps++ = pstate_list_cons;
+      *ps++ = pstate_list;
+      break;
+    case pstate_list_cons:
+    printf("list_cons\n");
+    break;
+    }
+  }
+  return *--pv;
+}
+
+static es_val_t parse_atom(es_ctx_t* ctx, es_val_t port);
+static es_val_t parse_list(es_ctx_t* ctx, es_val_t port);
+static es_val_t parse(es_ctx_t* ctx, es_val_t port);
+
+static es_val_t parse_atom(es_ctx_t* ctx, es_val_t port) {
+  char buf[1028] = "\0";
+  char *pbuf     = buf;
+  while(isspace(ppeekc(port))) pgetc(port);
+  if (ppeekc(port) == '#') {
+    *pbuf++ = pgetc(port);
+    if (strchr("tf", ppeekc(port))) {
+      return es_boolean_new(pgetc(port) == 't');
+    } else {
+      goto SYMBOL;
+    }
+  } else if (isdigit(ppeekc(port))) {
+    while(isdigit(ppeekc(port))) *pbuf++ = pgetc(port);
+    *pbuf = '\0';
+    return es_fixnum_new(atoi(buf));
+  } else {
+    SYMBOL: while(!strchr(" \t\n\r()", ppeekc(port))) *pbuf++ = pgetc(port);
+    *pbuf = '\0';
+    return es_symbol_intern(ctx, buf);
+  };
+}
+
+static es_val_t parse_list(es_ctx_t* ctx, es_val_t port) {
+  es_val_t head, tail;
+  while(isspace(ppeekc(port))) pgetc(port);
+  if (ppeekc(port) == ')' && pgetc(port)) {
+    return es_nil;
+  } else if (ppeekc(port) == '.' && pgetc(port)) {
+    tail = parse_atom(ctx, port);
+    parse_list(ctx, port);
+    return tail;
+  } else {
+    head = parse(ctx, port);
+    return es_cons(ctx, head, parse_list(ctx, port));
+  }  
+}
+
+static es_val_t parse(es_ctx_t* ctx, es_val_t port) {
+  if (ppeekc(port) == EOF) { return es_eof_obj; }
+  while(isspace(ppeekc(port))) pgetc(port);
+  if (ppeekc(port) == '(' && pgetc(port)) {
+    return parse_list(ctx, port);
+  } else if (ppeekc(port) == '\'' && pgetc(port)) {
+    return es_list(ctx, symbol_quote, parse(ctx, port), es_void);
+  } else {
+    return parse_atom(ctx, port);
+  }
+}
+
 static void es_symtab_init(es_symtab_t* symtab) {
   symtab->next_id = 0;
 }
@@ -2243,5 +2335,5 @@ static void ctx_init_env(es_ctx_t* ctx) {
   es_define_fn(ctx, "read-char",  fn_read_char,    2);
   es_define_fn(ctx, "close",      fn_close,        1);
 
-  es_load(ctx, "scm/init.scm");
+  //es_load(ctx, "scm/init.scm");
 }
