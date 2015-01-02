@@ -272,7 +272,7 @@ static size_t    es_vec_size_of(es_val_t vecval);
 static es_val_t  lookup_binding(es_val_t _env, es_val_t symbol);
 static int       timeval_subtract (struct timeval *result, struct timeval *x, struct timeval *y);
 static es_val_t  es_parse(es_ctx_t* ctx, es_val_t port);
-static es_val_t _parse(es_ctx_t* ctx, es_val_t port);
+static es_val_t  _parse(es_ctx_t* ctx, es_val_t port);
 static void      es_fixnum_print(es_ctx_t* ctx, es_val_t fixnum, es_val_t oport);
 static void      es_char_print(es_ctx_t* ctx, es_val_t clo, es_val_t oport);
 static void      es_string_print(es_ctx_t* ctx, es_val_t self, es_val_t oport);
