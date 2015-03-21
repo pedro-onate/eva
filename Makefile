@@ -1,19 +1,21 @@
-release : eva.h eva.c
-	gcc -O3 -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-label -o eva eva.c main.c
+CC=gcc
+PFLAGS=-DENABLE_REPL
+CFLAGS=-Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-label
+INC=eva.h
+SRC=eva.c
+OUTPUT=eva
 
-debug : eva.h eva.c
-	gcc -g -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-label -o eva eva.c main.c
+release : $(INC) $(SRC)
+	$(CC) -O3 $(PFLAGS) $(CFLAGS) $(SRC) -o $(OUTPUT)
 
-profile : eva.h eva.c
-	gcc -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-label -o eva eva.c main.c -pg
+debug : $(INC) $(SRC)
+	$(CC) -g $(PFLAGS) $(CFLAGS) $(SRC) -o $(OUTPUT)
 
-lib : eva.h eva.c
-
-check : src/eva.c src/eva.h tests/check.c
-	clang -I ./src -Wall -o tests/check src/eva.c src/parse.c tests/check.c
+check : $(INC) $(SRC) tests/check.c
+	$(CC) -I . $(CFLAGS) tests/check.c -o tests/check
 
 test : check
 	tests/check
 
 clean :
-	rm bin/eva3
+	rm -rf eva eva.dSYM
