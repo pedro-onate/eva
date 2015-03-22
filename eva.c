@@ -295,12 +295,12 @@ struct es_bytecode {
   int        ip;
 };
 
-#define es_tagged_val(v, tag) ((es_val_t){ .val = (((v) << es_tag_bits) | tag) })
-#define es_tagged_obj(o)      ((es_val_t){ .obj = (es_obj_t*)(o) })
-#define es_tag(v)             ((v).val & es_tag_mask)
-#define es_payload(t, v)      (((t)((v).val)) >> es_tag_bits)
-#define es_obj_to(t, v)       ((t)(v).obj)
-#define es_obj_to_val(o)      (es_val_t*)(o)
+#define es_tagged_val(v, tag) ((es_val_t)(((v) << es_tag_bits) | tag))
+#define es_tagged_obj(o)      ((es_val_t)(o))
+#define es_tag(v)             ((v) & es_tag_mask)
+#define es_payload(t, v)      (((t)(v)) >> es_tag_bits)
+#define es_obj_to(t, v)       ((t)(v))
+#define es_val_to_obj(v)      ((es_obj_t*)(v))
 
 #define gc_root(ctx, v)           ctx->roots.stack[ctx->roots.top++] = &v
 #define gc_root2(ctx, a, b)       gc_root(ctx, a); gc_root(ctx, b)
@@ -539,14 +539,14 @@ ES_API void es_mark_copy(es_heap_t* heap, es_val_t* ref, char** next) {
     return;
 
   if (es_obj_is_reloc(*ref)) {
-    ref->obj = ref->obj->reloc; // Update stale reference to relocated object
+    *ref = es_tagged_obj(es_val_to_obj(*ref)->reloc); // Update stale reference to relocated object
   } else {
     size_t size = es_size_of(*ref);                // Get size of object
     *next = es_align(*next, es_default_alignment); // Ensure next pointer is aligned
-    memcpy(*next, ref->obj, size);                 // Copy object from_space from_space-space into to_space-space
-    ref->obj->reloc = (es_obj_t*)*next;            // Leave forwarding pointer in old from_space-space object
-    ref->obj = ref->obj->reloc;                    // Update current reference to_space point to_space new object in to_space-space
-    ref->obj->reloc = NULL;                        // Reset tombstone
+    memcpy(*next, (void*)*ref, size);                 // Copy object from_space from_space-space into to_space-space
+    es_val_to_obj(*ref)->reloc = (es_obj_t*)*next;            // Leave forwarding pointer in old from_space-space object
+    *ref = es_tagged_obj(es_val_to_obj(*ref)->reloc);                    // Update current reference to_space point to_space new object in to_space-space
+    es_val_to_obj(*ref)->reloc = NULL;                        // Reset tombstone
     *next += size;                                 // Update next pointer
   }
 }
@@ -608,7 +608,7 @@ ES_API size_t es_size_of(es_val_t val) {
 }
 
 ES_API int es_is_eq(es_val_t v1, es_val_t v2) { 
-  return v1.obj == v2.obj; 
+  return v1 == v2; 
 }
 
 ES_API es_val_t es_make_bool(int value) { 
@@ -662,7 +662,7 @@ static void es_char_print(es_ctx_t* ctx, es_val_t val, es_val_t port) {
 }
 
 static int es_is_obj(es_val_t val) { 
-  return es_obj_tag == es_tag(val) && val.obj; 
+  return es_obj_tag == es_tag(val) && es_val_to_obj(val) != NULL; 
 }
 
 es_obj_t* es_obj_val(es_val_t val) { 
@@ -1318,7 +1318,7 @@ static es_val_t es_args_new(es_ctx_t* ctx, es_val_t parent, int arity, int rest,
   return es_tagged_obj(env);
 }
 
-#define es_args_val(val) ((es_args_t*)val.obj)
+#define es_args_val(val)  es_obj_to(es_args_t*, val)
 
 size_t es_args_size_of(es_val_t val) {
   es_args_t* args = es_obj_to(es_args_t*, val);

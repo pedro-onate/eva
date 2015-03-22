@@ -35,7 +35,7 @@
 
 typedef struct es_ctx     es_ctx_t;
 typedef enum   es_type    es_type_t;
-typedef union  es_val     es_val_t;
+typedef uintptr_t         es_val_t;
 typedef struct es_obj     es_obj_t;
 typedef struct es_pair    es_pair_t;
 typedef struct es_string  es_string_t;
@@ -48,13 +48,6 @@ typedef struct es_error   es_error_t;
 typedef struct es_env     es_env_t;
 typedef struct es_args    es_args_t;
 
-/**
- * Wrapper for first-class objects
- */
-union es_val {
-  es_obj_t* obj;
-  uintptr_t val;
-};
 
 /*
  * Function pointer for native c functions
