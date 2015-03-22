@@ -1,4 +1,7 @@
 #Eva v0.3.0
+
+[![Build Status](https://travis-ci.org/pedro-onate/eva.svg?branch=master)](https://travis-ci.org/pedro-onate/eva)
+
 A lightweight, embeddable, scheme implementation
 ##Build
 ```bash
