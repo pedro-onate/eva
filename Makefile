@@ -1,6 +1,6 @@
 CC=gcc
 PFLAGS=-DENABLE_REPL
-CFLAGS=-Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-label
+CFLAGS=-std=c99 -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-label
 INC=eva.h
 SRC=eva.c
 OUTPUT=eva
