@@ -15,16 +15,29 @@
 
 #define ES_API
 
+typedef struct es_obj          es_obj_t;
+typedef struct es_pair         es_pair_t;
+typedef struct es_string       es_string_t;
+typedef struct es_fn           es_fn_t;
+typedef struct es_closure      es_closure_t;
+typedef struct es_vec          es_vec_t;
+typedef struct es_byte_vec     es_byte_vec_t;
+typedef struct es_proc         es_proc_t;
+typedef struct es_port         es_port_t;
+typedef struct es_error        es_error_t;
+typedef struct es_env          es_env_t;
+typedef struct es_args         es_args_t;
 typedef enum   es_tag          es_tag_t;
 typedef struct es_heap         es_heap_t;
 typedef struct es_roots        es_roots_t;
 typedef struct es_frame        es_frame_t;
 typedef struct es_symtab       es_symtab_t;
-typedef enum   es_opcode       es_opcode_t;
+typedef enum   es_vm_opcode    es_vm_opcode_t;
 typedef struct es_bytecode     es_bytecode_t;
+typedef struct es_continuation es_continuation_t;
 typedef struct es_state        es_state_t;
-typedef struct es_inst         es_inst_t;
-typedef struct es_opcode_info  es_opcode_info_t;
+typedef struct es_vm_inst      es_vm_inst_t;
+typedef struct es_vm_inst_info es_vm_inst_info_t;
 
 enum es_tag {
   es_obj_tag     = 0x0, /**< b000 - Heap allocated object */
@@ -43,16 +56,14 @@ enum { es_val_payload_bits = sizeof(uintptr_t) * 8 - es_tag_bits };
 enum { es_default_alignment = 16 };
 enum { es_default_heap_size = 128 * 1000000 };
 enum { es_symtab_size = 32768 };
-enum { es_global_env_size = 32768 };
+enum { es_global_env_size = 32 };
 enum { es_root_stack_size = 1024 };
 enum { es_const_pool_size = 256 };
 enum { es_stack_size = 256 };
 enum { es_max_frames = 256 };
 
-enum { 
-  es_fixnum_min = -1 << es_val_payload_bits, 
-  es_fixnum_max = 1 << es_val_payload_bits 
-};
+#define es_fixnum_min (-1 << es_val_payload_bits)
+#define es_fixnum_max (1 << es_val_payload_bits)
 
 static char* es_type_str[] = {
   "es_nil_type",
@@ -65,11 +76,11 @@ static char* es_type_str[] = {
   "es_eof_obj_type",
   "es_closure_type",
   "es_unbound_type",
-  "es_defined_type",
   "es_undefined_type",
   "es_void_type",
   "es_port_type",
   "es_vector_type",
+  "es_byte_vector_type",
   "es_fn_type",
   "es_env_type",
   "es_args_type",
@@ -79,19 +90,35 @@ static char* es_type_str[] = {
 };
 
 /* VM opcodes */
-enum es_opcode { HALT, CONST, POP, GLOBAL_REF, GLOBAL_SET, CLOSED_REF, 
-  CLOSED_SET, ARG_REF, ARG_SET, JMP, BF, CALL, TAIL_CALL, RETURN, CLOSURE, OPCODE_MAX };
-
-struct es_opcode_info {
-  es_opcode_t opcode;
-  const char* name;
-  int         arity;
+enum es_vm_opcode {
+  HALT,
+  CONST,
+  POP,
+  GLOBAL_REF,
+  GLOBAL_SET,
+  CLOSED_REF,
+  CLOSED_SET,
+  ARG_REF,
+  ARG_SET,
+  JMP,
+  BF,
+  CALL,
+  TAIL_CALL,
+  RETURN,
+  CLOSURE,
+  OPCODE_MAX
 };
 
-static es_opcode_info_t opcode_info[] = {
+struct es_vm_inst_info {
+  es_vm_opcode_t opcode;
+  const char*    name;
+  int            arity;
+};
+
+static es_vm_inst_info_t inst_info[] = {
   { HALT,       "halt",       0 },
   { CONST,      "const",      1 },
-  { POP,        "pop",        0 },  
+  { POP,        "pop",        0 },
   { GLOBAL_REF, "global-ref", 1 },
   { GLOBAL_SET, "global-set", 1 },
   { CLOSED_REF, "closed-ref", 2 },
@@ -109,13 +136,11 @@ static es_opcode_info_t opcode_info[] = {
 #ifdef LABELS_AS_VALUES
   typedef void* es_op_t;
   static void** inst_addrs;
-  #define get_op(opcode) inst_addrs[opcode]
 #else
   typedef char es_op_t;
-  #define get_op(opcode) (char)op
 #endif
 
-struct es_inst {
+struct es_vm_inst {
   es_op_t op;
   short   op1;
   short   op2;
@@ -125,22 +150,30 @@ struct es_inst {
 #define inst_op1(inst) inst->op1
 #define inst_op2(inst) inst->op2
 
-es_opcode_info_t* inst_opinfo(es_inst_t* inst) {
+es_op_t get_op(es_vm_opcode_t opcode) {
+  #ifdef LABELS_AS_VALUES
+    return inst_addrs[opcode];
+  #else
+    return opcode;
+  #endif
+}
+
+es_vm_inst_info_t* inst_opinfo(es_vm_inst_t* inst) {
   es_op_t op = inst->op;
 
   int opcode = -1;
-  #ifdef LABELS_AS_VALUES
+#ifdef LABELS_AS_VALUES
   for(int i = 0; i < OPCODE_MAX; i++) {
     if (op == inst_addrs[i]) {
       opcode = i;
       break;
     }
   }
-  #else
-    opcode = op;
-  #endif
+#else
+  opcode = op;
+#endif
 
-  return opcode == -1 ? NULL : &opcode_info[opcode];
+  return opcode == -1 ? NULL : &inst_info[opcode];
 }
 
 struct es_obj {
@@ -171,18 +204,18 @@ struct es_symtab {
 };
 
 struct es_frame {
-  es_val_t   args;
-  es_inst_t* knt;
+  es_val_t      args;
+  es_vm_inst_t* knt;
 };
 
 struct es_state {
-  es_val_t   env;
-  es_val_t   args;
-  es_inst_t* ip;
-  int        sp;
-  es_val_t   stack[es_stack_size];
-  int        fp;
-  es_frame_t frames[es_max_frames];
+  es_vm_inst_t* ip;
+  int           sp;
+  int           fp;
+  es_val_t      env;
+  es_val_t      args;
+  es_val_t      stack[es_stack_size];
+  es_frame_t    frames[es_max_frames];
 };
 
 struct es_roots {
@@ -238,6 +271,12 @@ struct es_vec {
   es_val_t array[];
 };
 
+struct es_byte_vec {
+  es_obj_t base;
+  size_t   length;
+  char     array[];
+};
+
 struct es_closure {
   es_obj_t   base;
   es_val_t   env;
@@ -285,18 +324,23 @@ struct es_proc {
   int      end;
 };
 
+struct es_continuation {
+  es_obj_t   base;
+  es_state_t state;
+};
+
 struct es_bytecode {
   es_obj_t   base;
   es_val_t   cpool[es_const_pool_size];
   int        cpool_size;
   int        cpi;
-  es_inst_t* inst;
+  es_vm_inst_t* inst;
   int        inst_size;
   int        ip;
 };
 
 #define es_tagged_val(v, tag) ((es_val_t)(((v) << es_tag_bits) | tag))
-#define es_tagged_obj(o)      ((es_val_t)(o))
+#define es_obj_to_val(o)      ((es_val_t)(o))
 #define es_tag(v)             ((v) & es_tag_mask)
 #define es_payload(t, v)      (((t)(v)) >> es_tag_bits)
 #define es_obj_to(t, v)       ((t)(v))
@@ -308,66 +352,12 @@ struct es_bytecode {
 #define gc_root4(ctx, a, b, c, d) gc_root(ctx, a); gc_root3(ctx, b, c, d)
 #define gc_unroot(ctx, n)         ctx->roots.top -= n
 
-static void      es_ctx_init(es_ctx_t* ctx, size_t heap_size);
-static void      ctx_init_env(es_ctx_t* ctx);
-static int       es_is_obj(es_val_t val);
-static es_type_t es_obj_type_of(es_val_t val);
-static es_obj_t* es_obj_reloc(es_val_t obj);
-static void      es_obj_init(es_val_t obj, enum es_type type);
-static void      es_mark_copy(es_heap_t* heap, es_val_t* pval, char** next);
-static int       es_obj_is_reloc(es_val_t val);
-static void*     es_align(void* bc, int align) { return (void*)((((uintptr_t)bc / align) + 1) * align); }
-static void*     es_heap_alloc(es_heap_t* heap, size_t size);
-static void      es_heap_init(es_heap_t* heap, size_t size);
-static void      es_symtab_init(es_symtab_t* symtab);
-static char*     es_symtab_find_by_id(es_symtab_t* symtab, int id);
-static int       es_symtab_id_by_string(es_symtab_t* symtab, char* cstr);
-static int       es_symtab_find_or_create(es_symtab_t* symtab, char* cstr);
-static int       es_symtab_add_string(es_symtab_t* symtab, char* cstr);
-static size_t    es_vec_size_of(es_val_t vecval);
-static int       timeval_subtract (struct timeval *result, struct timeval *x, struct timeval *y);
-static es_val_t  es_parse(es_ctx_t* ctx, es_val_t port);
-static void      es_fixnum_print(es_ctx_t* ctx, es_val_t fixnum, es_val_t oport);
-static void      es_char_print(es_ctx_t* ctx, es_val_t clo, es_val_t oport);
-static void      es_string_print(es_ctx_t* ctx, es_val_t self, es_val_t oport);
-static void      es_pair_print(es_ctx_t* ctx, es_val_t val, es_val_t oport);
-static void      es_vec_print(es_ctx_t* ctx, es_val_t self, es_val_t oport);
-static void      es_error_print(es_ctx_t* ctx, es_val_t val, es_val_t oport);
-static void      es_symbol_print(es_ctx_t* ctx, es_val_t sym, es_val_t oport);
-static void      es_bytecode_print(es_ctx_t* ctx, es_val_t val, es_val_t oport);
-static size_t    es_string_size_of(es_val_t value);
-static size_t    es_args_size_of(es_val_t value);
-static size_t    es_env_size_of(es_val_t val);
-static void      es_proc_print(es_ctx_t* ctx, es_val_t val, es_val_t port);
-static void*     es_alloc(es_ctx_t* ctx, es_type_t type, size_t size);
-static void      es_vec_mark_copy(es_heap_t* heap, es_val_t pval, char** next);
-static void      es_closure_mark_copy(es_heap_t* heap, es_val_t pval, char** next);
-static void      es_pair_mark_copy(es_heap_t* heap, es_val_t pval, char** next);
-static void      es_env_mark_copy(es_heap_t* heap, es_val_t pval, char** next);
-static void      es_args_mark_copy(es_heap_t* heap, es_val_t pval, char** next);
-static void      es_bytecode_mark_copy(es_heap_t* heap, es_val_t pval, char** next);
-static void      es_port_mark(es_val_t port);
-static es_val_t  compile(es_ctx_t* ctx, es_val_t bc, es_val_t exp, int tail_pos, int next, es_val_t scope);
-static es_val_t  compile_form(es_ctx_t* ctx, es_val_t bc, es_val_t exp, int tail_pos, int next, es_val_t scope);
-static es_val_t  compile_call(es_ctx_t* ctx, es_val_t bc, es_val_t exp, int tail_pos, int next, es_val_t scope);
-static es_val_t  compile_args(es_ctx_t* ctx, es_val_t bc, es_val_t exp, es_val_t scope);
-static es_val_t  compile_lambda(es_ctx_t* ctx, es_val_t bc, es_val_t formals, es_val_t body, int tail_pos, int next, es_val_t scope);
-static es_val_t  compile_if(es_ctx_t* ctx, es_val_t bc, es_val_t cond, es_val_t bthen, es_val_t belse, int tail_pos, int next, es_val_t scope);
-static es_val_t  compile_seq(es_ctx_t* ctx, es_val_t bc, es_val_t seq, int tail_pos, int next, es_val_t scope);
-static es_val_t  compile_define(es_ctx_t* ctx, es_val_t bc, es_val_t binding, es_val_t val, int tail_pos, int next, es_val_t scope);
-static es_val_t  compile_set(es_ctx_t* ctx, es_val_t bc, es_val_t sym, es_val_t exp, int tail_pos, int next, es_val_t scope);
-static es_val_t  compile_ref(es_ctx_t* ctx, es_val_t bc, es_val_t sym, int tail_pos, int next, es_val_t scope);
-static es_val_t  compile_const(es_ctx_t* ctx, es_val_t bc, es_val_t exp, int tail_pos, int next, es_val_t scope);
-static void      es_env_print(es_ctx_t* ctx, es_val_t env, es_val_t port);
-static es_val_t  es_vm(es_ctx_t* ctx, int start, es_val_t env);
-
 const es_val_t es_nil       = es_tagged_val(es_nil_type, es_value_tag);
 const es_val_t es_true      = es_tagged_val(1, es_boolean_tag);
 const es_val_t es_false     = es_tagged_val(0, es_boolean_tag);
 const es_val_t es_eof_obj   = es_tagged_val(es_eof_obj_type, es_value_tag);
 const es_val_t es_void      = es_tagged_val(es_void_type, es_value_tag);
 const es_val_t es_unbound   = es_tagged_val(es_unbound_type, es_value_tag);
-const es_val_t es_defined   = es_tagged_val(es_defined_type, es_value_tag);
 const es_val_t es_undefined = es_tagged_val(es_undefined_type, es_value_tag);
 
 static const es_val_t symbol_define     = es_tagged_val(0, es_symbol_tag);
@@ -378,23 +368,87 @@ static const es_val_t symbol_lambda     = es_tagged_val(4, es_symbol_tag);
 static const es_val_t symbol_quote      = es_tagged_val(5, es_symbol_tag);
 static const es_val_t symbol_quasiquote = es_tagged_val(6, es_symbol_tag);
 
+static void           es_ctx_init(es_ctx_t* ctx, size_t heap_size);
+static void           ctx_init_env(es_ctx_t* ctx);
+static int            is_obj(es_val_t val);
+static es_type_t      obj_type_of(es_val_t val);
+static es_obj_t*      obj_reloc(es_val_t obj);
+static void           obj_init(es_val_t obj, enum es_type type);
+static void           es_mark_copy(es_heap_t* heap, es_val_t* pval, char** next);
+static int            es_obj_is_reloc(es_val_t val);
+static void*          align(void* bc, int align) { return (void*)((((uintptr_t)bc / align) + 1) * align); }
+static void*          heap_alloc(es_heap_t* heap, size_t size);
+static void           heap_init(es_heap_t* heap, size_t size);
+static void           symtab_init(es_symtab_t* symtab);
+static char*          symtab_find_by_id(es_symtab_t* symtab, int id);
+static int            symtab_id_by_string(es_symtab_t* symtab, char* cstr);
+static int            symtab_find_or_create(es_symtab_t* symtab, char* cstr);
+static int            symtab_add_string(es_symtab_t* symtab, char* cstr);
+static es_string_t*   es_string_val(es_val_t val);
+static es_pair_t*     es_pair_val(es_val_t val);
+static es_vec_t*      es_vec_val(es_val_t val);
+static es_closure_t*  es_closure_val(es_val_t val);
+static es_port_t*     es_port_val(es_val_t val);
+static es_error_t*    es_error_val(es_val_t val);
+static es_env_t*      es_env_val(es_val_t val);
+static es_bytecode_t* es_bytecode_val(es_val_t val);
+static size_t         es_vec_size_of(es_val_t vecval);
+static size_t         es_byte_vec_size_of(es_val_t vecval);
+static int            timeval_subtract (struct timeval *result, struct timeval *x, struct timeval *y);
+static es_val_t       es_parse(es_ctx_t* ctx, es_val_t port);
+static void           es_fixnum_print(es_ctx_t* ctx, es_val_t fixnum, es_val_t oport);
+static void           es_char_print(es_ctx_t* ctx, es_val_t clo, es_val_t oport);
+static void           es_string_print(es_ctx_t* ctx, es_val_t self, es_val_t oport);
+static void           es_pair_print(es_ctx_t* ctx, es_val_t val, es_val_t oport);
+static void           es_vec_print(es_ctx_t* ctx, es_val_t self, es_val_t oport);
+static void           es_byte_vec_print(es_ctx_t* ctx, es_val_t self, es_val_t oport);
+static void           es_error_print(es_ctx_t* ctx, es_val_t val, es_val_t oport);
+static void           es_symbol_print(es_ctx_t* ctx, es_val_t sym, es_val_t oport);
+static void           es_bytecode_print(es_ctx_t* ctx, es_val_t val, es_val_t oport);
+static size_t         es_string_size_of(es_val_t value);
+static size_t         es_args_size_of(es_val_t value);
+static size_t         es_env_size_of(es_val_t val);
+static void           es_proc_print(es_ctx_t* ctx, es_val_t val, es_val_t port);
+static void           es_env_print(es_ctx_t* ctx, es_val_t env, es_val_t port);
+static void*          es_alloc(es_ctx_t* ctx, es_type_t type, size_t size);
+static void           es_vec_mark_copy(es_heap_t* heap, es_val_t pval, char** next);
+static void           es_closure_mark_copy(es_heap_t* heap, es_val_t pval, char** next);
+static void           es_pair_mark_copy(es_heap_t* heap, es_val_t pval, char** next);
+static void           es_env_mark_copy(es_heap_t* heap, es_val_t pval, char** next);
+static void           es_args_mark_copy(es_heap_t* heap, es_val_t pval, char** next);
+static void           es_bytecode_mark_copy(es_heap_t* heap, es_val_t pval, char** next);
+static void           es_port_mark(es_val_t port);
+static es_val_t       compile(es_ctx_t* ctx, es_val_t bc, es_val_t exp, int tail_pos, int next, es_val_t scope);
+static es_val_t       compile_form(es_ctx_t* ctx, es_val_t bc, es_val_t exp, int tail_pos, int next, es_val_t scope);
+static es_val_t       compile_call(es_ctx_t* ctx, es_val_t bc, es_val_t exp, int tail_pos, int next, es_val_t scope);
+static es_val_t       compile_args(es_ctx_t* ctx, es_val_t bc, es_val_t exp, es_val_t scope);
+static es_val_t       compile_lambda(es_ctx_t* ctx, es_val_t bc, es_val_t formals, es_val_t body, int tail_pos, int next, es_val_t scope);
+static es_val_t       compile_if(es_ctx_t* ctx, es_val_t bc, es_val_t exp, int tail_pos, int next, es_val_t scope);
+static es_val_t       compile_seq(es_ctx_t* ctx, es_val_t bc, es_val_t seq, int tail_pos, int next, es_val_t scope);
+static es_val_t       compile_define(es_ctx_t* ctx, es_val_t bc, es_val_t binding, es_val_t val, int tail_pos, int next, es_val_t scope);
+static es_val_t       compile_set(es_ctx_t* ctx, es_val_t bc, es_val_t sym, es_val_t exp, int tail_pos, int next, es_val_t scope);
+static es_val_t       compile_ref(es_ctx_t* ctx, es_val_t bc, es_val_t sym, int tail_pos, int next, es_val_t scope);
+static es_val_t       compile_const(es_ctx_t* ctx, es_val_t bc, es_val_t exp, int tail_pos, int next, es_val_t scope);
+static es_val_t       es_vm_run(es_ctx_t* ctx, int start, es_val_t env);
+static void           print_inst(es_vm_inst_t* inst);
+
 ES_API es_ctx_t* es_ctx_new(size_t heap_size) {
   es_ctx_t* ctx = malloc(sizeof(es_ctx_t));
-  es_vm(ctx, -1, es_nil);
+  es_vm_run(ctx, -1, es_nil);
   es_ctx_init(ctx, heap_size);
   return ctx;
 }
 
 static void es_ctx_init(es_ctx_t* ctx, size_t heap_size) {
-  es_heap_init(&ctx->heap, heap_size);
-  es_ctx_set_env(ctx, es_make_env(ctx, 65536));
+  heap_init(&ctx->heap, heap_size);
+  es_ctx_set_env(ctx, es_make_env(ctx, es_global_env_size));
   ctx->roots.top = 0;
   ctx->iport = es_void;
   ctx->oport = es_void;
   ctx->state.sp = 0;
   ctx->state.fp = 0;
   ctx->bytecode = es_make_bytecode(ctx);
-  es_symtab_init(&ctx->symtab);
+  symtab_init(&ctx->symtab);
   es_symbol_intern(ctx, "define");
   es_symbol_intern(ctx, "if");
   es_symbol_intern(ctx, "begin");
@@ -406,41 +460,41 @@ static void es_ctx_init(es_ctx_t* ctx, size_t heap_size) {
   ctx_init_env(ctx);
 }
 
-ES_API void es_ctx_free(es_ctx_t* ctx)  { 
-  free(ctx); 
+ES_API void es_ctx_free(es_ctx_t* ctx)  {
+  free(ctx);
 }
 
-ES_API es_val_t es_ctx_iport(es_ctx_t* ctx) { 
-  return ctx->iport; 
+ES_API es_val_t es_ctx_iport(const es_ctx_t* ctx) {
+  return ctx->iport;
 }
 
-ES_API es_val_t es_ctx_oport(es_ctx_t* ctx) { 
-  return ctx->oport; 
+ES_API es_val_t es_ctx_oport(const es_ctx_t* ctx) {
+  return ctx->oport;
 }
 
-ES_API void es_ctx_set_iport(es_ctx_t* ctx, es_val_t port) { 
-  ctx->iport = port; 
+ES_API void es_ctx_set_iport(es_ctx_t* ctx, es_val_t port) {
+  ctx->iport = port;
 }
 
-ES_API void es_ctx_set_oport(es_ctx_t* ctx, es_val_t port) { 
-  ctx->oport = port; 
+ES_API void es_ctx_set_oport(es_ctx_t* ctx, es_val_t port) {
+  ctx->oport = port;
 }
 
-ES_API es_val_t es_ctx_env(es_ctx_t* ctx) { 
-  return ctx->env; 
+ES_API es_val_t es_ctx_env(es_ctx_t* ctx) {
+  return ctx->env;
 }
 
-ES_API void es_ctx_set_env(es_ctx_t* ctx, es_val_t env) { 
-  ctx->env = env; 
+ES_API void es_ctx_set_env(es_ctx_t* ctx, es_val_t env) {
+  ctx->env = env;
 }
 
 static void* es_alloc(es_ctx_t* ctx, es_type_t type, size_t size) {
   void* mem;
-  while(!(mem = es_heap_alloc(&ctx->heap, size))) { 
+  while(!(mem = heap_alloc(&ctx->heap, size))) {
     //printf("out of memory\n");
-    es_gc(ctx); 
+    es_gc(ctx);
   }
-  es_obj_init(es_tagged_obj(mem), type);
+  obj_init(es_obj_to_val(mem), type);
   return mem;
 }
 
@@ -481,7 +535,7 @@ ES_API void es_gc(es_ctx_t* ctx) {
   }
 
   while(scan < next) {
-    es_val_t obj = es_tagged_obj(scan);
+    es_val_t obj = es_obj_to_val(scan);
     switch(es_type_of(obj)) {
     case es_pair_type:      es_pair_mark_copy(heap, obj, &next);     break;
     case es_closure_type:   es_closure_mark_copy(heap, obj, &next);  break;
@@ -490,8 +544,8 @@ ES_API void es_gc(es_ctx_t* ctx) {
     case es_args_type:      es_args_mark_copy(heap, obj, &next);     break;
     case es_bytecode_type:  es_bytecode_mark_copy(heap, obj, &next); break;
     default:                                                         break;
-    } 
-    scan = es_align(scan + es_size_of(obj), es_default_alignment);
+    }
+    scan = align(scan + es_size_of(obj), es_default_alignment);
   }
 
   tmp              = heap->from_space;
@@ -506,13 +560,13 @@ ES_API void es_gc(es_ctx_t* ctx) {
   //printf("gc time: %f\n", dt.tv_sec * 1000.0 + dt.tv_usec / 1000.0);
 }
 
-static int ceil_to(int n, int u) { 
-  return ((n + u - 1) / u) * u; 
+static int ceil_to(int n, int u) {
+  return ((n + u - 1) / u) * u;
 }
 
-static void* es_heap_alloc(es_heap_t* heap, size_t size) {
+static void* heap_alloc(es_heap_t* heap, size_t size) {
   void* mem;
-  heap->next = es_align(heap->next, es_default_alignment);
+  heap->next = align(heap->next, es_default_alignment);
   if (size > (heap->end - heap->next)) {
     return NULL;
   }
@@ -521,12 +575,12 @@ static void* es_heap_alloc(es_heap_t* heap, size_t size) {
   return mem;
 }
 
-static void es_heap_init(es_heap_t* heap, size_t size) {
+static void heap_init(es_heap_t* heap, size_t size) {
   heap->requested  = size;
   heap->size       = ceil_to((size + 1) / 2, es_default_alignment);
   heap->buffer     = malloc(heap->size * 2);
-  heap->from_space = es_align(heap->buffer, es_default_alignment);
-  heap->to_space   = es_align(heap->from_space + heap->size, es_default_alignment);
+  heap->from_space = align(heap->buffer, es_default_alignment);
+  heap->to_space   = align(heap->from_space + heap->size, es_default_alignment);
   heap->next       = heap->from_space;
   heap->end        = heap->from_space + size;
   heap->to_end     = heap->to_space + size;
@@ -535,17 +589,17 @@ static void es_heap_init(es_heap_t* heap, size_t size) {
 ES_API void es_mark_copy(es_heap_t* heap, es_val_t* ref, char** next) {
   es_type_t t = es_type_of(*ref);
   assert(*next < heap->to_end);
-  if (!es_is_obj(*ref))
+  if (!is_obj(*ref))
     return;
 
   if (es_obj_is_reloc(*ref)) {
-    *ref = es_tagged_obj(es_val_to_obj(*ref)->reloc); // Update stale reference to relocated object
+    *ref = es_obj_to_val(es_val_to_obj(*ref)->reloc); // Update stale reference to relocated object
   } else {
     size_t size = es_size_of(*ref);                // Get size of object
-    *next = es_align(*next, es_default_alignment); // Ensure next pointer is aligned
+    *next = align(*next, es_default_alignment); // Ensure next pointer is aligned
     memcpy(*next, (void*)*ref, size);                 // Copy object from_space from_space-space into to_space-space
     es_val_to_obj(*ref)->reloc = (es_obj_t*)*next;            // Leave forwarding pointer in old from_space-space object
-    *ref = es_tagged_obj(es_val_to_obj(*ref)->reloc);                    // Update current reference to_space point to_space new object in to_space-space
+    *ref = es_obj_to_val(es_val_to_obj(*ref)->reloc);                    // Update current reference to_space point to_space new object in to_space-space
     es_val_to_obj(*ref)->reloc = NULL;                        // Reset tombstone
     *next += size;                                 // Update next pointer
   }
@@ -553,7 +607,7 @@ ES_API void es_mark_copy(es_heap_t* heap, es_val_t* ref, char** next) {
 
 ES_API es_type_t es_type_of(es_val_t val) {
   switch(es_tag(val)) {
-  case es_obj_tag:     return es_obj_type_of(val);
+  case es_obj_tag:     return obj_type_of(val);
   case es_value_tag:   return es_payload(es_type_t, val);
   case es_boolean_tag: return es_boolean_type;
   case es_fixnum_tag:  return es_fixnum_type;
@@ -567,7 +621,7 @@ ES_API void es_print(es_ctx_t* ctx, es_val_t val, es_val_t oport) {
   switch(es_type_of(val)) {
   case es_nil_type:          es_port_printf(ctx, oport,"()");          break;
   case es_boolean_type:      es_port_printf(ctx, oport, "#%c", es_is_eq(val, es_false) ? 'f' : 't'); break;
-  case es_fixnum_type:       es_fixnum_print(ctx, val, oport);             break; 
+  case es_fixnum_type:       es_fixnum_print(ctx, val, oport);             break;
   case es_symbol_type:       es_symbol_print(ctx, val, oport);             break;
   case es_char_type:         es_char_print(ctx, val, oport);               break;
   case es_string_type:       es_string_print(ctx, val, oport);             break;
@@ -579,6 +633,7 @@ ES_API void es_print(es_ctx_t* ctx, es_val_t val, es_val_t oport) {
   case es_void_type:         es_port_printf(ctx, oport,"#<void>");         break;
   case es_port_type:         es_port_printf(ctx, oport,"#<port>");         break;
   case es_vector_type:       es_vec_print(ctx, val, oport);                break;
+  case es_byte_vector_type:  es_byte_vec_print(ctx, val, oport);           break;
   case es_error_type:        es_error_print(ctx, val, oport);              break;
   case es_bytecode_type:     es_bytecode_print(ctx, val, oport);           break;
   case es_proc_type:         es_proc_print(ctx, val, oport);               break;
@@ -589,13 +644,14 @@ ES_API void es_print(es_ctx_t* ctx, es_val_t val, es_val_t oport) {
   }
 }
 
-ES_API size_t es_size_of(es_val_t val) { 
+ES_API size_t es_size_of(es_val_t val) {
   switch(es_type_of(val)) {
   case es_string_type:       return es_string_size_of(val);
   case es_pair_type:         return sizeof(es_pair_t);
   case es_closure_type:      return sizeof(es_closure_t);
   case es_port_type:         return sizeof(es_port_t);
   case es_vector_type:       return es_vec_size_of(val);
+  case es_byte_vector_type:  return es_byte_vec_size_of(val);
   case es_fn_type:           return sizeof(es_fn_t);
   case es_bytecode_type:     return sizeof(es_bytecode_t);
   case es_error_type:        return sizeof(es_error_t);
@@ -607,32 +663,32 @@ ES_API size_t es_size_of(es_val_t val) {
   }
 }
 
-ES_API int es_is_eq(es_val_t v1, es_val_t v2) { 
-  return v1 == v2; 
+ES_API int es_is_eq(es_val_t v1, es_val_t v2) {
+  return v1 == v2;
 }
 
-ES_API es_val_t es_make_bool(int value) { 
-  return es_tagged_val(value == 0 ? 0 : 1, es_boolean_tag); 
+ES_API es_val_t es_make_bool(int value) {
+  return es_tagged_val(value == 0 ? 0 : 1, es_boolean_tag);
 }
 
-ES_API int es_is_boolean(es_val_t val) { 
-  return es_boolean_type == es_type_of(val); 
+ES_API int es_is_boolean(es_val_t val) {
+  return es_boolean_type == es_type_of(val);
 }
 
-ES_API int es_is_true(es_val_t val) { 
-  return es_bool_val(val) != 0; 
+ES_API int es_is_true(es_val_t val) {
+  return es_bool_val(val) != 0;
 }
 
-ES_API int es_bool_val(es_val_t val) { 
-  return es_payload(int, val); 
+ES_API int es_bool_val(es_val_t val) {
+  return es_payload(int, val);
 }
 
-ES_API es_val_t es_make_char(int charcode) { 
-  return es_tagged_val(charcode, es_char_tag); 
+ES_API es_val_t es_make_char(int charcode) {
+  return es_tagged_val(charcode, es_char_tag);
 }
 
-ES_API int es_char_val(es_val_t val) { 
-  return es_payload(int, val); 
+ES_API int es_char_val(es_val_t val) {
+  return es_payload(int, val);
 }
 
 ES_API es_val_t es_make_char_cstr(char* buf) {
@@ -647,8 +703,8 @@ ES_API es_val_t es_make_char_cstr(char* buf) {
   }
 }
 
-ES_API int es_is_char(es_val_t val) { 
-  return es_char_type == es_type_of(val); 
+ES_API int es_is_char(es_val_t val) {
+  return es_char_type == es_type_of(val);
 }
 
 static void es_char_print(es_ctx_t* ctx, es_val_t val, es_val_t port) {
@@ -661,60 +717,60 @@ static void es_char_print(es_ctx_t* ctx, es_val_t val, es_val_t port) {
   }
 }
 
-static int es_is_obj(es_val_t val) { 
-  return es_obj_tag == es_tag(val) && es_val_to_obj(val) != NULL; 
+static int is_obj(es_val_t val) {
+  return es_obj_tag == es_tag(val) && es_val_to_obj(val) != NULL;
 }
 
-es_obj_t* es_obj_val(es_val_t val) { 
-  return es_obj_to(es_obj_t*, val); 
+es_obj_t* es_obj_val(es_val_t val) {
+  return es_obj_to(es_obj_t*, val);
 }
 
-static es_type_t es_obj_type_of(es_val_t val) { 
-  return es_obj_val(val)->type; 
+static es_type_t obj_type_of(es_val_t val) {
+  return es_obj_val(val)->type;
 }
 
-static es_obj_t* es_obj_reloc(es_val_t obj) { 
-  return es_obj_val(obj)->reloc; 
+static es_obj_t* obj_reloc(es_val_t obj) {
+  return es_obj_val(obj)->reloc;
 }
 
-static void es_obj_init(es_val_t self, es_type_t type) {
+static void obj_init(es_val_t self, es_type_t type) {
   es_obj_t* obj = es_obj_val(self);
   obj->type  = type;
   obj->reloc = NULL;
 }
 
 static int es_obj_is_reloc(es_val_t val) {
-  return es_obj_reloc(val) != NULL;
+  return obj_reloc(val) != NULL;
 }
 
 ES_API es_val_t es_make_error(es_ctx_t* ctx, char* errstr) {
   es_error_t* error = es_alloc(ctx, es_error_type, sizeof(es_error_t));
   error->errstr = errstr;
-  return es_tagged_obj(error);
+  return es_obj_to_val(error);
 }
 
-ES_API int es_is_error(es_val_t val) { 
-  return es_error_type == es_type_of(val); 
+ES_API int es_is_error(es_val_t val) {
+  return es_error_type == es_type_of(val);
 }
 
-es_error_t* es_error_val(es_val_t val) { 
-  return es_obj_to(es_error_t*, val); 
+es_error_t* es_error_val(es_val_t val) {
+  return es_obj_to(es_error_t*, val);
 }
 
 static void es_error_print(es_ctx_t* ctx, es_val_t val, es_val_t port) {
   es_port_printf(ctx, port, "#<error: %s>", es_error_val(val)->errstr);
 }
 
-ES_API es_val_t es_make_fixnum(int value) { 
-  return es_tagged_val(value, es_fixnum_tag); 
+ES_API es_val_t es_make_fixnum(int value) {
+  return es_tagged_val(value, es_fixnum_tag);
 }
 
-ES_API int es_is_fixnum(es_val_t val) { 
-  return es_fixnum_type == es_type_of(val); 
+ES_API int es_is_fixnum(es_val_t val) {
+  return es_fixnum_type == es_type_of(val);
 }
 
-ES_API int es_fixnum_val(es_val_t fixnum) { 
-  return es_payload(int, fixnum); 
+ES_API int es_fixnum_val(es_val_t fixnum) {
+  return es_payload(int, fixnum);
 }
 
 ES_API es_val_t es_number_add(es_val_t v1, es_val_t v2) {
@@ -745,8 +801,8 @@ ES_API es_val_t es_number_div(es_val_t v1, es_val_t v2) {
   return es_make_fixnum(a / b);
 }
 
-ES_API int es_number_is_eq(es_val_t a, es_val_t b) { 
-  return es_is_eq(a, b); 
+ES_API int es_number_is_eq(es_val_t a, es_val_t b) {
+  return es_is_eq(a, b);
 }
 
 static void es_fixnum_print(es_ctx_t* ctx, es_val_t val, es_val_t port) {
@@ -760,31 +816,31 @@ ES_API es_val_t es_make_pair(es_ctx_t* ctx, es_val_t head, es_val_t tail) {
   pair->head = head;
   pair->tail = tail;
   gc_unroot(ctx, 2);
-  return es_tagged_obj(pair);
+  return es_obj_to_val(pair);
 }
 
-ES_API int es_is_pair(es_val_t val) { 
-  return es_pair_type == es_type_of(val); 
+ES_API int es_is_pair(es_val_t val) {
+  return es_pair_type == es_type_of(val);
 }
 
-ES_API es_pair_t* es_pair_val(es_val_t val) { 
-  return es_obj_to(es_pair_t*, val); 
+ES_API es_pair_t* es_pair_val(es_val_t val) {
+  return es_obj_to(es_pair_t*, val);
 }
 
-ES_API es_val_t es_pair_car(es_val_t pair)    { 
-  return es_pair_val(pair)->head; 
+ES_API es_val_t es_pair_car(es_val_t pair)    {
+  return es_pair_val(pair)->head;
 }
 
-ES_API es_val_t es_pair_cdr(es_val_t pair) { 
-  return es_pair_val(pair)->tail; 
+ES_API es_val_t es_pair_cdr(es_val_t pair) {
+  return es_pair_val(pair)->tail;
 }
 
-ES_API void es_pair_set_head(es_val_t pair, es_val_t value) { 
-  es_pair_val(pair)->head = value; 
+ES_API void es_pair_set_head(es_val_t pair, es_val_t value) {
+  es_pair_val(pair)->head = value;
 }
 
-ES_API void es_pair_set_tail(es_val_t pair, es_val_t value) { 
-  es_pair_val(pair)->tail = value; 
+ES_API void es_pair_set_tail(es_val_t pair, es_val_t value) {
+  es_pair_val(pair)->tail = value;
 }
 
 static void es_pair_mark_copy(es_heap_t* heap, es_val_t pval, char** next) {
@@ -810,9 +866,8 @@ static void es_pair_print(es_ctx_t* ctx, es_val_t val, es_val_t port) {
 }
 
 ES_API es_val_t es_make_port(es_ctx_t* ctx, FILE* stream) {
-  es_port_t* port;
-  port = es_alloc(ctx, es_port_type, sizeof(es_port_t));
-  port->stream = stream;  
+  es_port_t* port = es_alloc(ctx, es_port_type, sizeof(es_port_t));
+  port->stream = stream;
   port->eof    = 0;
   port->top    = 0;
   port->tail   = 0;
@@ -822,15 +877,15 @@ ES_API es_val_t es_make_port(es_ctx_t* ctx, FILE* stream) {
   port->colnum = 0;
   port->size   = 65536;
   port->buf    = malloc(port->size);
-  return es_tagged_obj(port);
+  return es_obj_to_val(port);
 }
 
-ES_API int es_is_port(es_val_t val) { 
-  return es_port_type == es_type_of(val); 
+ES_API int es_is_port(es_val_t val) {
+  return es_port_type == es_type_of(val);
 }
 
-ES_API es_port_t* es_port_val(es_val_t val) { 
-  return es_obj_to(es_port_t*, val); 
+ES_API es_port_t* es_port_val(es_val_t val) {
+  return es_obj_to(es_port_t*, val);
 }
 
 ES_API es_val_t es_port_printf(es_ctx_t* ctx, es_val_t port, const char* fmt, ...) {
@@ -864,7 +919,7 @@ ES_API int es_port_getc(es_val_t port) {
   es_port_t* p = es_port_val(port);
   if (p->cur < p->tail) {
     int c = p->buf[p->cur++];
-    if (p->top == 0 && p->cur == p->tail) 
+    if (p->top == 0 && p->cur == p->tail)
       p->cur = p->tail = 0;
     return port_update_pos(port, c);
   } else if (p->eof) {
@@ -892,7 +947,7 @@ ES_API int es_port_peekc(es_val_t port) {
     es_port_mark(port);
     int c = es_port_getc(port);
     es_port_reset(port);
-    return c;  
+    return c;
   }
 }
 
@@ -958,44 +1013,65 @@ ES_API es_val_t es_make_fn(es_ctx_t* ctx, int arity, es_pfn_t pfn) {
   es_fn_t* fn = es_alloc(ctx, es_fn_type, sizeof(es_fn_t));
   fn->arity   = arity;
   fn->pfn     = pfn;
-  return es_tagged_obj(fn);
+  return es_obj_to_val(fn);
 }
 
-ES_API int es_is_fn(es_val_t val) { 
-  return es_fn_type == es_type_of(val); 
+ES_API int es_is_fn(es_val_t val) {
+  return es_fn_type == es_type_of(val);
 }
 
-ES_API es_fn_t* es_fn_val(es_val_t val) { 
-  return es_obj_to(es_fn_t*, val); 
+ES_API es_fn_t* es_fn_val(es_val_t val) {
+  return es_obj_to(es_fn_t*, val);
 }
 
 static es_val_t es_fn_apply_argv(es_ctx_t* ctx, es_val_t fn, int argc, es_val_t* argv) {
   return es_fn_val(fn)->pfn(ctx, argc, argv);
 }
 
-es_val_t es_proc_new(es_ctx_t* ctx, int arity, int rest, int addr, int end) {
+es_val_t es_make_proc(es_ctx_t* ctx, int arity, int rest, int addr, int end) {
   es_proc_t* proc = es_alloc(ctx, es_proc_type, sizeof(es_proc_t));
   proc->arity = arity;
   proc->rest  = rest;
   proc->addr  = addr;
   proc->end   = end;
-  return es_tagged_obj(proc);
+  return es_obj_to_val(proc);
 }
 
-ES_API es_proc_t* es_proc_val(es_val_t val) { 
-  return es_obj_to(es_proc_t*, val); 
+ES_API es_proc_t* es_proc_val(es_val_t val) {
+  return es_obj_to(es_proc_t*, val);
 }
 
-void es_proc_print(es_ctx_t* ctx, es_val_t val, es_val_t port) {
-  es_port_printf(ctx, port,"#<compiled-proc %p>", es_proc_val(val)->addr);
+static void es_proc_print(es_ctx_t* ctx, es_val_t val, es_val_t port) {
+  es_proc_t* proc = es_proc_val(val);
+  es_port_printf(ctx, port,"#<compiled-procedure\n");
+  es_bytecode_t* bcode = es_bytecode_val(ctx->bytecode);
+  for(int i = proc->addr; i < proc->end; i++) {
+    print_inst(bcode->inst + i);
+    es_port_printf(ctx, port, "\n");
+  }
+  es_port_printf(ctx, port, ">");
 }
 
-int es_proc_addr(es_val_t proc) { 
-  return es_proc_val(proc)->addr; 
+static int es_proc_addr(es_val_t proc) {
+  return es_proc_val(proc)->addr;
 }
 
-int es_proc_arity(es_val_t proc) { 
-  return es_proc_val(proc)->arity; 
+static int es_proc_arity(es_val_t proc) {
+  return es_proc_val(proc)->arity;
+}
+
+ES_API es_val_t es_make_continuation(es_ctx_t* ctx) {
+  es_continuation_t* k = es_alloc(ctx, es_continuation_type, sizeof(es_continuation_t));
+
+  return es_obj_to_val(k);
+}
+
+ES_API int es_is_continuation(es_val_t val) {
+  return es_continuation_type == es_type_of(val);
+}
+
+es_continuation_t* es_continuation_val(es_val_t val) {
+  return es_obj_to(es_continuation_t*, val);
 }
 
 ES_API es_val_t es_string_make(es_ctx_t* ctx, int length, char c);
@@ -1006,7 +1082,7 @@ ES_API es_val_t es_make_string(es_ctx_t* ctx, char* cstr) {
   string = es_alloc(ctx, es_string_type, sizeof(es_string_t) + length + 1);
   string->length = length;
   strcpy(string->value, cstr);
-  return es_tagged_obj(string);
+  return es_obj_to_val(string);
 }
 
 ES_API es_val_t es_string_make(es_ctx_t* ctx, int length, char c) {
@@ -1017,7 +1093,7 @@ ES_API es_val_t es_string_make(es_ctx_t* ctx, int length, char c) {
     string->value[i] = c;
   }
   string->value[string->length] = '\0';
-  return es_tagged_obj(string);
+  return es_obj_to_val(string);
 }
 
 ES_API int es_string_ref(es_val_t string, int k) {
@@ -1025,16 +1101,16 @@ ES_API int es_string_ref(es_val_t string, int k) {
   return s->value[k];
 }
 
-ES_API int es_is_string(es_val_t val) { 
-  return es_string_type == es_type_of(val); 
+ES_API int es_is_string(es_val_t val) {
+  return es_string_type == es_type_of(val);
 }
 
-ES_API es_string_t* es_string_val(es_val_t val) { 
-  return es_obj_to(es_string_t*, val); 
+ES_API es_string_t* es_string_val(es_val_t val) {
+  return es_obj_to(es_string_t*, val);
 }
 
 ES_API es_val_t es_string_to_symbol(es_ctx_t* ctx, es_val_t val) {
-  return es_unbound;
+  return es_nil;
 }
 
 static size_t es_string_size_of(es_val_t value) {
@@ -1046,21 +1122,21 @@ static void es_string_print(es_ctx_t* ctx, es_val_t self, es_val_t port) {
   es_port_printf(ctx, port,"\"%s\"", es_string_val(self)->value);
 }
 
-ES_API es_val_t es_make_symbol(int value) { 
-  return es_tagged_val(value, es_symbol_tag); 
+ES_API es_val_t es_make_symbol(int value) {
+  return es_tagged_val(value, es_symbol_tag);
 }
 
-ES_API int es_is_symbol(es_val_t val) { 
-  return es_symbol_type == es_type_of(val); 
+ES_API int es_is_symbol(es_val_t val) {
+  return es_symbol_type == es_type_of(val);
 }
 
-ES_API int es_symbol_val(es_val_t val) { 
-  return es_payload(int, val); 
+ES_API int es_symbol_val(es_val_t val) {
+  return es_payload(int, val);
 }
 
 ES_API es_val_t es_symbol_intern(es_ctx_t* ctx, char* cstr) {
   es_symtab_t* symtab = &ctx->symtab;
-  int id = es_symtab_find_or_create(symtab, cstr);
+  int id = symtab_find_or_create(symtab, cstr);
   if (id < 0) {
     return es_make_error(ctx, "symtab count exceeded");
   }
@@ -1070,64 +1146,76 @@ ES_API es_val_t es_symbol_intern(es_ctx_t* ctx, char* cstr) {
 ES_API es_val_t es_symbol_to_string(es_ctx_t* ctx, es_val_t val) {
   es_symtab_t* symtab = &ctx->symtab;
   int          symval = es_symbol_val(val);
-  return es_make_string(ctx, es_symtab_find_by_id(symtab, symval));
+  return es_make_string(ctx, symtab_find_by_id(symtab, symval));
 }
 
 static void es_symbol_print(es_ctx_t* ctx, es_val_t sym, es_val_t port) {
-  char* string = es_symtab_find_by_id(&ctx->symtab, es_symbol_val(sym));
+  char* string = symtab_find_by_id(&ctx->symtab, es_symbol_val(sym));
   es_port_printf(ctx, port, "%s", string);
 }
 
-ES_API int es_is_unbound(es_val_t val) { 
+ES_API int es_is_unbound(es_val_t val) {
   return es_unbound_type == es_type_of(val);
 }
 
-ES_API int es_is_defined(es_val_t val) { 
-  return es_defined_type == es_type_of(val);
+ES_API int es_is_defined(es_val_t val) {
+  return es_unbound_type != es_type_of(val);
 }
 
-ES_API int es_is_undefined(es_val_t val) { 
+ES_API int es_is_undefined(es_val_t val) {
   return es_undefined_type == es_type_of(val);
-}  
-
-ES_API int es_is_void(es_val_t val) { 
-  return es_void_type == es_type_of(val); 
 }
 
-ES_API int es_is_nil(es_val_t val) { 
-  return es_nil_type == es_type_of(val); 
+ES_API int es_is_void(es_val_t val) {
+  return es_void_type == es_type_of(val);
 }
 
-ES_API int es_is_eof_obj(es_val_t val) { 
-  return es_eof_obj_type == es_type_of(val); 
+ES_API int es_is_nil(es_val_t val) {
+  return es_nil_type == es_type_of(val);
+}
+
+ES_API int es_is_eof_obj(es_val_t val) {
+  return es_eof_obj_type == es_type_of(val);
 }
 
 ES_API es_val_t es_make_vec(es_ctx_t* ctx, int size) {
   es_vec_t* vector = es_alloc(ctx, es_vector_type, sizeof(es_vec_t) + size * sizeof(es_val_t));
   vector->length = size;
   for(int i = 0; i < size; i++)
-    vector->array[i] = es_unbound;
-  return es_tagged_obj(vector);
+    vector->array[i] = es_undefined;
+  return es_obj_to_val(vector);
 }
 
-ES_API int es_is_vec(es_val_t val) { 
-  return es_vector_type == es_type_of(val); 
+ES_API es_val_t es_make_byte_vec(es_ctx_t* ctx, size_t size) {
+  es_byte_vec_t* vec = es_alloc(ctx, es_byte_vector_type, sizeof(es_byte_vec_t) + size);
+  vec->length = size;
+  for(int i = 0; i < size; i++)
+    vec->array[i] = 0;
+  return es_obj_to_val(vec);
 }
 
-ES_API es_vec_t* es_vector_val(es_val_t val) { 
-  return es_obj_to(es_vec_t*, val); 
+ES_API int es_is_byte_vec(es_val_t val) {
+  return es_type_of(val) == es_byte_vector_type;
 }
 
-ES_API int es_vec_len(es_val_t vector) { 
-  return es_vector_val(vector)->length; 
+ES_API int es_is_vec(es_val_t val) {
+  return es_vector_type == es_type_of(val);
 }
 
-ES_API void es_vec_set(es_val_t vector, int idx, es_val_t val) { 
-  es_vector_val(vector)->array[idx] = val; 
+ES_API es_vec_t* es_vec_val(es_val_t val) {
+  return es_obj_to(es_vec_t*, val);
 }
 
-ES_API es_val_t es_vec_ref(es_val_t vector, int idx) { 
-  return es_vector_val(vector)->array[idx]; 
+ES_API int es_vec_len(es_val_t vector) {
+  return es_vec_val(vector)->length;
+}
+
+ES_API void es_vec_set(es_val_t vector, int idx, es_val_t val) {
+  es_vec_val(vector)->array[idx] = val;
+}
+
+ES_API es_val_t es_vec_ref(es_val_t vector, int idx) {
+  return es_vec_val(vector)->array[idx];
 }
 
 ES_API es_val_t es_vec_from_list(es_ctx_t* ctx, es_val_t list) {
@@ -1144,11 +1232,11 @@ ES_API es_val_t es_vec_from_list(es_ctx_t* ctx, es_val_t list) {
 }
 
 static size_t es_vec_size_of(es_val_t vecval) {
-  return sizeof(es_vec_t) + es_vector_val(vecval)->length * sizeof(es_val_t);
+  return sizeof(es_vec_t) + es_vec_val(vecval)->length * sizeof(es_val_t);
 }
 
 static void es_vec_mark_copy(es_heap_t* heap, es_val_t pval, char** next) {
-  es_vec_t* vector = es_vector_val(pval);
+  es_vec_t* vector = es_vec_val(pval);
   for(int i = 0; i < vector->length; i++) {
     es_mark_copy(heap, &vector->array[i], next);
   }
@@ -1156,11 +1244,34 @@ static void es_vec_mark_copy(es_heap_t* heap, es_val_t pval, char** next) {
 
 static void es_vec_print(es_ctx_t* ctx, es_val_t self, es_val_t port) {
   int i, len;
-  es_port_printf(ctx, port, "#("); 
+  es_port_printf(ctx, port, "#(");
   es_print(ctx, es_vec_ref(self, 0), port);
   for(i = 1, len = es_vec_len(self); i < len; i++) {
-    es_port_printf(ctx, port, " "); 
+    es_port_printf(ctx, port, " ");
     es_print(ctx, es_vec_ref(self, i), port);
+  }
+  es_port_printf(ctx, port, ")");
+}
+
+static es_byte_vec_t* es_byte_vec_val(es_val_t val) {
+  return es_obj_to(es_byte_vec_t*, val);
+}
+
+ES_API es_val_t es_byte_vec_ref(es_val_t vec, size_t k) {
+  return es_make_fixnum(es_byte_vec_val(vec)->array[k]);
+}
+
+static size_t es_byte_vec_size_of(es_val_t val) {
+  return sizeof(es_byte_vec_t) + es_vec_val(val)->length;
+}
+
+static void es_byte_vec_print(es_ctx_t* ctx, es_val_t self, es_val_t port) {
+  int i, len;
+  es_port_printf(ctx, port, "#u8(");
+  es_print(ctx, es_byte_vec_ref(self, 0), port);
+  for(i = 1, len = es_byte_vec_val(self)->length; i < len; i++) {
+    es_port_printf(ctx, port, " ");
+    es_print(ctx, es_byte_vec_ref(self, i), port);
   }
   es_port_printf(ctx, port, ")");
 }
@@ -1170,15 +1281,31 @@ es_val_t es_make_env(es_ctx_t* ctx, int size){
   es_env_t* env = es_alloc(ctx, es_env_type, sz);
   env->count = 0;
   env->size  = size;
-  return es_tagged_obj(env);
+  return es_obj_to_val(env);
 }
 
-size_t es_env_size_of(es_val_t val) {
+static size_t es_env_size_of(es_val_t val) {
   return sizeof(es_env_t) + es_env_val(val)->size * sizeof(es_slot_t);
 }
 
-ES_API es_env_t* es_env_val(es_val_t val) { 
-  return es_obj_to(es_env_t*, val); 
+static size_t es_env_size(es_val_t env) {
+  return es_env_val(env)->size;
+}
+
+static size_t es_env_count(es_val_t env) {
+  return es_env_val(env)->count;
+}
+
+static es_val_t es_env_val_of(es_val_t env, int slot) {
+  return es_env_val(env)->slots[slot].val;
+}
+
+static void env_set_val(es_val_t env, int slot, es_val_t val) {
+  es_env_val(env)->slots[slot].val = val;
+}
+
+static es_env_t* es_env_val(es_val_t val) {
+  return es_obj_to(es_env_t*, val);
 }
 
 static void es_env_mark_copy(es_heap_t* heap, es_val_t pval, char** next) {
@@ -1217,24 +1344,43 @@ static int es_env_loc(es_val_t _env, es_val_t sym) {
   return -1;
 }
 
-static int es_env_reserve_loc(es_val_t _env, es_val_t sym, es_val_t init) {
-  es_env_t* env = es_env_val(_env);
-  int loc = es_env_loc(_env, sym);
+static int env_reserve_loc(es_ctx_t* ctx, es_val_t env, es_val_t sym, es_val_t init) {
+  int loc = es_env_loc(env, sym);
   if (loc > -1) {
-    if (es_is_undefined(env->slots[loc].val)) {
-      env->slots[loc].val = init;
+    if (es_is_unbound(es_env_val_of(env, loc))) {
+      env_set_val(env, loc, init);
     }
     return loc;
   }
-  env->slots[env->count].sym = sym;
-  env->slots[env->count].val = init;
-  return env->count++;
+
+  size_t size  = es_env_size(env);
+  size_t count = es_env_count(env);
+
+  if (count >= size) {
+    size_t new_size = (size << 1) + size;
+    gc_root3(ctx, env, sym, init);
+
+    es_val_t new_env = es_make_env(ctx, new_size);
+
+    for(int i = 0; i < count; i++) {
+      es_env_val(new_env)->slots[i].sym = es_env_val(env)->slots[i].sym;
+      es_env_val(new_env)->slots[i].val = es_env_val(env)->slots[i].val;
+      es_env_val(new_env)->count++;
+    }
+
+    gc_unroot(ctx, 3);
+
+    ctx->env = new_env;
+    env = new_env;
+  }
+
+  es_env_val(env)->slots[es_env_val(env)->count].sym = sym;
+  es_env_val(env)->slots[es_env_val(env)->count].val = init;
+  return es_env_val(env)->count++;
 }
 
-ES_API es_val_t es_define_symbol(es_ctx_t* ctx, es_val_t _env, es_val_t sym, es_val_t val) {
-  es_env_t* env = es_env_val(_env);
-  int loc = es_env_reserve_loc(_env, sym, es_defined);
-  env->slots[loc].val = val;
+ES_API es_val_t es_define_symbol(es_ctx_t* ctx, es_val_t env, es_val_t sym, es_val_t val) {
+  env_reserve_loc(ctx, env, sym, val);
   return es_void;
 }
 
@@ -1246,16 +1392,6 @@ ES_API es_val_t es_define_fn(es_ctx_t* ctx, char* name, es_pfn_t fn, int arity) 
   return es_define(ctx, name, es_make_fn(ctx, arity, fn));
 }
 
-ES_API es_val_t es_lookup_symbol(es_ctx_t* ctx, es_val_t _env, es_val_t sym) {
-  es_val_t val  = es_unbound;
-  es_env_t* env = es_env_val(_env);
-  int loc = es_env_loc(_env, sym);
-  if (loc > -1) {
-    val = env->slots[loc].val; 
-  }
-  return es_is_undefined(val) || es_is_defined(val) ? es_make_error(ctx, "unbound symbol") : val;
-}
-
 /**
  * Updates the value bound to the given slot index
  *
@@ -1265,9 +1401,9 @@ ES_API es_val_t es_lookup_symbol(es_ctx_t* ctx, es_val_t _env, es_val_t sym) {
  * @param val  The new value to bind to this index
  * @return     The bound value
  */
-es_val_t es_env_set(es_ctx_t* ctx, es_val_t env, int slot, es_val_t val) {
+static es_val_t env_set(es_ctx_t* ctx, es_val_t env, int slot, es_val_t val) {
   es_env_t* e = es_env_val(env);
-  if (es_is_undefined(e->slots[slot].val)) {
+  if (es_is_unbound(e->slots[slot].val)) {
     return es_make_error(ctx, "unbound symbol");
   }
   e->slots[slot].val = val;
@@ -1282,10 +1418,10 @@ es_val_t es_env_set(es_ctx_t* ctx, es_val_t env, int slot, es_val_t val) {
  * @param slot The slot index
  * @return     The bound value
  */
-es_val_t es_env_ref(es_ctx_t* ctx, es_val_t env, int slot) {
+static es_val_t env_ref(es_ctx_t* ctx, es_val_t env, int slot) {
   es_env_t* e = es_env_val(env);
   es_val_t val = e->slots[slot].val;
-  return !es_is_undefined(val) ? val : es_make_error(ctx, "unbound symbol");
+  return !es_is_unbound(val) ? val : es_make_error(ctx, "unbound symbol");
 }
 
 /**
@@ -1315,12 +1451,14 @@ static es_val_t es_args_new(es_ctx_t* ctx, es_val_t parent, int arity, int rest,
     }
   }
   gc_unroot(ctx, 1);
-  return es_tagged_obj(env);
+  return es_obj_to_val(env);
 }
 
-#define es_args_val(val)  es_obj_to(es_args_t*, val)
+static es_args_t* es_args_val(es_val_t val) {
+  return es_obj_to(es_args_t*, val);
+}
 
-size_t es_args_size_of(es_val_t val) {
+static size_t es_args_size_of(es_val_t val) {
   es_args_t* args = es_obj_to(es_args_t*, val);
   return sizeof(es_args_t) + args->size * sizeof(es_val_t);
 }
@@ -1334,20 +1472,20 @@ static void es_args_mark_copy(es_heap_t* heap, es_val_t pval, char** next) {
 
 es_val_t es_make_bytecode(es_ctx_t* ctx) {
   es_bytecode_t* b = es_alloc(ctx, es_bytecode_type, sizeof(es_bytecode_t));
-  b->inst       = malloc(1024 * sizeof(es_inst_t));
+  b->inst       = malloc(1024 * sizeof(es_vm_inst_t));
   b->inst_size  = 1024;
   b->cpool_size = es_const_pool_size;
   b->cpi        = 0;
   b->ip         = 0;
-  return es_tagged_obj(b);
+  return es_obj_to_val(b);
 }
 
-ES_API int es_is_bytecode(es_val_t val) { 
-  return es_bytecode_type == es_type_of(val); 
+ES_API int es_is_bytecode(es_val_t val) {
+  return es_bytecode_type == es_type_of(val);
 }
 
-ES_API es_bytecode_t* es_bytecode_val(es_val_t val) { 
-  return es_obj_to(es_bytecode_t*, val); 
+ES_API es_bytecode_t* es_bytecode_val(es_val_t val) {
+  return es_obj_to(es_bytecode_t*, val);
 }
 
 static void es_bytecode_mark_copy(es_heap_t* heap, es_val_t pval, char** next) {
@@ -1358,8 +1496,8 @@ static void es_bytecode_mark_copy(es_heap_t* heap, es_val_t pval, char** next) {
 
 //static void indent(int depth) { int i; for(i = 0; i < depth; i++) { printf("  "); } }
 
-static void print_inst(es_inst_t* inst) {
-  es_opcode_info_t* i = inst_opinfo(inst);
+static void print_inst(es_vm_inst_t* inst) {
+  es_vm_inst_info_t* i = inst_opinfo(inst);
   switch(i->arity) {
     case 0: printf("%s", i->name);                         break;
     case 1: printf("%s %d", i->name, inst->op1);             break;
@@ -1381,14 +1519,14 @@ static void es_bytecode_print(es_ctx_t* ctx, es_val_t val, es_val_t port) {
   es_port_printf(ctx, port, ",\n");
   es_port_printf(ctx, port,"const pool:\n");
   for(i = 0; i < bc->cpi; i++) {
-    es_port_printf(ctx, port,"%4d: ", i); 
+    es_port_printf(ctx, port,"%4d: ", i);
     es_print(ctx, bc->cpool[i], port);
     es_port_printf(ctx, port, "\n");
   }
   es_port_printf(ctx, port, ">");
 }
 
-static void es_emit_inst(es_val_t code, es_opcode_t op, short op1, short op2) {
+static void es_emit_inst(es_val_t code, es_vm_opcode_t op, short op1, short op2) {
   es_bytecode_t* b = es_bytecode_val(code);
   if (b->ip >= b->inst_size) {
     b->inst_size += b->inst_size / 2;
@@ -1400,59 +1538,59 @@ static void es_emit_inst(es_val_t code, es_opcode_t op, short op1, short op2) {
   b->ip++;
 }
 
-static void emit_global_set(es_val_t code, int cpi) { 
+static void emit_global_set(es_val_t code, int cpi) {
   es_emit_inst(code, GLOBAL_SET, cpi, 0);
 }
 
-static void emit_const(es_val_t code, int cpi) { 
-  es_emit_inst(code, CONST, cpi, 0); 
+static void emit_const(es_val_t code, int cpi) {
+  es_emit_inst(code, CONST, cpi, 0);
 }
 
-static void emit_halt(es_val_t code) { 
-  es_emit_inst(code, HALT, 0, 0); 
+static void emit_halt(es_val_t code) {
+  es_emit_inst(code, HALT, 0, 0);
 }
 
-static void emit_global_ref(es_val_t code, int cpi) { 
+static void emit_global_ref(es_val_t code, int cpi) {
   es_emit_inst(code, GLOBAL_REF, cpi, 0);
 }
 
-static void emit_arg_ref(es_val_t code, int idx) { 
-  es_emit_inst(code, ARG_REF, idx, 0); 
+static void emit_arg_ref(es_val_t code, int idx) {
+  es_emit_inst(code, ARG_REF, idx, 0);
 }
 
-static void emit_arg_set(es_val_t code, int idx) { 
-  es_emit_inst(code, ARG_SET, idx, 0); 
+static void emit_arg_set(es_val_t code, int idx) {
+  es_emit_inst(code, ARG_SET, idx, 0);
 }
 
-static void emit_pop(es_val_t code) { 
-  es_emit_inst(code, POP, 0, 0); 
+static void emit_pop(es_val_t code) {
+  es_emit_inst(code, POP, 0, 0);
 }
 
-static void emit_bf(es_val_t code, int dIp) { 
+static void emit_bf(es_val_t code, int dIp) {
   es_emit_inst(code, BF, dIp, 0);
 }
 
-static void emit_jmp(es_val_t code, int dIp) { 
+static void emit_jmp(es_val_t code, int dIp) {
   es_emit_inst(code, JMP, dIp, 0);
 }
 
-static void emit_closure(es_val_t code, int cpi) { 
+static void emit_closure(es_val_t code, int cpi) {
   es_emit_inst(code, CLOSURE, cpi, 0);
 }
 
-static void emit_call(es_val_t code, int argc) { 
-  es_emit_inst(code, CALL, argc, 0); 
+static void emit_call(es_val_t code, int argc) {
+  es_emit_inst(code, CALL, argc, 0);
 }
 
-static void emit_tail_call(es_val_t code, int argc) { 
+static void emit_tail_call(es_val_t code, int argc) {
   es_emit_inst(code, TAIL_CALL, argc, 0);
 }
 
-static void emit_closed_ref(es_val_t code, int depth, int idx) { 
-  es_emit_inst(code, CLOSED_REF, depth, idx); 
+static void emit_closed_ref(es_val_t code, int depth, int idx) {
+  es_emit_inst(code, CLOSED_REF, depth, idx);
 }
 
-static void emit_closed_set(es_val_t code, int depth, int idx) { 
+static void emit_closed_set(es_val_t code, int depth, int idx) {
   es_emit_inst(code, CLOSED_SET, depth, idx);
 }
 
@@ -1463,11 +1601,13 @@ static int alloc_const(es_val_t code, es_val_t v) {
     if (es_is_eq(v, b->cpool[i]))
       return i;
   }
-  b->cpool[b->cpi] = v; 
-  return b->cpi++; 
+  b->cpool[b->cpi] = v;
+  return b->cpi++;
 }
-  
-#define bytecode_label(code) es_bytecode_val(code)->ip
+
+static int bytecode_label(es_val_t code) {
+  return es_bytecode_val(code)->ip;
+}
 
 //=================
 // Closures
@@ -1479,15 +1619,15 @@ es_val_t es_make_closure(es_ctx_t* ctx, es_val_t env, es_val_t proc) {
   closure->proc = proc;
   closure->env  = env;
   gc_unroot(ctx, 2);
-  return es_tagged_obj(closure);
+  return es_obj_to_val(closure);
 }
 
-ES_API int es_is_closure(es_val_t value) { 
-  return es_closure_type == es_type_of(value); 
+ES_API int es_is_closure(es_val_t value) {
+  return es_closure_type == es_type_of(value);
 }
 
-ES_API es_closure_t* es_closure_val(es_val_t val) { 
-  return es_obj_to(es_closure_t*, val); 
+ES_API es_closure_t* es_closure_val(es_val_t val) {
+  return es_obj_to(es_closure_t*, val);
 }
 
 static void es_closure_mark_copy(es_heap_t* heap, es_val_t pval, char** next) {
@@ -1504,7 +1644,7 @@ ES_API es_val_t es_make_list(es_ctx_t* ctx, ...) {
   va_list argp;
   va_start(argp, ctx);
   e = va_arg(argp, es_val_t);
-  if (es_is_void(e)) 
+  if (es_is_void(e))
     return es_nil;
   tail = list = es_cons(ctx, e, es_nil);
   while(!es_is_void(e = va_arg(argp, es_val_t))) {
@@ -1519,7 +1659,7 @@ ES_API int es_list_length(es_val_t list) {
   int i = 0;
   while(!es_is_nil(list)) {
     list = es_cdr(list);
-    i++; 
+    i++;
   }
   return i;
 }
@@ -1527,13 +1667,13 @@ ES_API int es_list_length(es_val_t list) {
 //================
 // Reader
 //================
-typedef enum es_token { 
-  tk_eof, tk_lpar, tk_hlpar, tk_rpar, tk_int, tk_tbool, 
-  tk_fbool, tk_str, tk_char, tk_dot, tk_sym, tk_quot, 
+typedef enum es_token {
+  tk_eof, tk_lpar, tk_hlpar, tk_rpar, tk_int, tk_tbool,
+  tk_fbool, tk_str, tk_char, tk_dot, tk_sym, tk_quot,
   tk_qquot, tk_unquot, tk_unquot_splice, tk_unknown
 } es_token_t;
 
-typedef enum lstate { 
+typedef enum lstate {
   lstate_start, lstate_sign, lstate_int, lstate_dot, lstate_sym
 } lstate_t;
 
@@ -1558,7 +1698,7 @@ static int escape(int c) {
 static int eat_ws(es_val_t port) {
   int res = 0;
   while(isspace(ppeekc(port))) {
-    pgetc(port); 
+    pgetc(port);
     res = 1;
   }
   return res;
@@ -1715,15 +1855,15 @@ static es_val_t es_parse(es_ctx_t* ctx, es_val_t port) {
   }
 }
 
-static void es_symtab_init(es_symtab_t* symtab) {
+static void symtab_init(es_symtab_t* symtab) {
   symtab->next_id = 0;
 }
 
-static char* es_symtab_find_by_id(es_symtab_t* symtab, int id) {
+static char* symtab_find_by_id(es_symtab_t* symtab, int id) {
   return symtab->table[id];
 }
 
-static int es_symtab_id_by_string(es_symtab_t* symtab, char* cstr) {
+static int symtab_id_by_string(es_symtab_t* symtab, char* cstr) {
   for(int i = 0; i < symtab->next_id; i++) {
     if (strcmp(symtab->table[i], cstr) == 0) {
       return i;
@@ -1732,19 +1872,19 @@ static int es_symtab_id_by_string(es_symtab_t* symtab, char* cstr) {
   return -1;
 }
 
-static int es_symtab_count(es_symtab_t* symtab) { 
-  return symtab->next_id; 
+static int symtab_count(es_symtab_t* symtab) {
+  return symtab->next_id;
 }
 
-static int es_symtab_find_or_create(es_symtab_t* symtab, char* cstr) {
-  int id = es_symtab_id_by_string(symtab, cstr);
+static int symtab_find_or_create(es_symtab_t* symtab, char* cstr) {
+  int id = symtab_id_by_string(symtab, cstr);
   if (id < 0) {
-    return es_symtab_add_string(symtab, cstr);
+    return symtab_add_string(symtab, cstr);
   }
   return id;
 }
 
-static int es_symtab_add_string(es_symtab_t* symtab, char* cstr) {
+static int symtab_add_string(es_symtab_t* symtab, char* cstr) {
   if (symtab->next_id < es_symtab_size) {
     char* newstr = malloc(strlen(cstr) + 1);
     strcpy(newstr, cstr);
@@ -1771,24 +1911,24 @@ static int index_of(es_val_t lst, es_val_t e) {
   return -1;
 }
 
-static es_val_t scope_args(es_val_t scope) { 
-  return es_car(scope); 
+static es_val_t scope_args(es_val_t scope) {
+  return es_car(scope);
 }
 
-static es_val_t make_scope(es_ctx_t* ctx, es_val_t args, es_val_t parent) { 
-  return es_cons(ctx, flatten_args(ctx, args), parent); 
+static es_val_t make_scope(es_ctx_t* ctx, es_val_t args, es_val_t parent) {
+  return es_cons(ctx, flatten_args(ctx, args), parent);
 }
 
-static es_val_t scope_parent(es_val_t scope) { 
-  return es_cdr(scope); 
+static es_val_t scope_parent(es_val_t scope) {
+  return es_cdr(scope);
 }
 
 static int arg_idx(es_val_t scope, es_val_t symbol, int* pidx, int* pdepth) {
   int idx   = -1;
   int depth = 0;
 
-  while(!es_is_nil(scope) 
-    && (idx = index_of(scope_args(scope), symbol)) == -1 
+  while(!es_is_nil(scope)
+    && (idx = index_of(scope_args(scope), symbol)) == -1
     && !es_is_nil((scope = scope_parent(scope)))
   ) {
     depth++;
@@ -1802,7 +1942,7 @@ static int arg_idx(es_val_t scope, es_val_t symbol, int* pidx, int* pdepth) {
 static int lambda_arity(es_val_t formals, int* rest) {
   int arity = 0;
   if (es_is_symbol(formals)) {
-    *rest = 1; 
+    *rest = 1;
     return arity;
   }
   while(es_is_pair(formals)) {
@@ -1831,10 +1971,7 @@ static es_val_t compile_form(es_ctx_t* ctx, es_val_t bc, es_val_t exp, int tail_
     if (es_is_eq(op, symbol_define)) {
       compile_define(ctx, bc, es_car(args), es_cdr(args), tail_pos, next, scope);
     } else if (es_is_eq(op, symbol_if)) {
-      es_val_t cond  = es_car(args);
-      es_val_t bthen = es_cadr(args);
-      es_val_t belse = es_caddr(args);
-      compile_if(ctx, bc, cond, bthen, belse, tail_pos, next, scope);
+      compile_if(ctx, bc, exp, tail_pos, next, scope);
     } else if (es_is_eq(op, symbol_lambda)) {
       es_val_t formals = es_car(args);
       es_val_t body    = es_cdr(args);
@@ -1869,7 +2006,7 @@ static es_val_t compile_ref(es_ctx_t* ctx, es_val_t bc, es_val_t sym, int tail_p
       emit_closed_ref(bc, depth, idx);
     }
   } else {
-    emit_global_ref(bc, es_env_reserve_loc(es_ctx_env(ctx), sym, es_undefined));
+    emit_global_ref(bc, env_reserve_loc(ctx, es_ctx_env(ctx), sym, es_unbound));
   }
   if (tail_pos) es_emit_inst(bc, next, 0, 0);
   return es_void;
@@ -1885,7 +2022,7 @@ static es_val_t compile_set(es_ctx_t* ctx, es_val_t bc, es_val_t sym, es_val_t e
       emit_closed_set(bc, depth, idx);
     }
   } else {
-    emit_global_set(bc, es_env_reserve_loc(es_ctx_env(ctx), sym, es_undefined));
+    emit_global_set(bc, env_reserve_loc(ctx, es_ctx_env(ctx), sym, es_unbound));
   }
   if (tail_pos) es_emit_inst(bc, next, 0, 0);
   return es_void;
@@ -1906,7 +2043,7 @@ static es_val_t compile_call(es_ctx_t* ctx, es_val_t bc, es_val_t exp, int tail_
 }
 
 static es_val_t compile_lambda(es_ctx_t* ctx, es_val_t bc, es_val_t formals, es_val_t body, int tail_pos, int next, es_val_t scope) {
-  int label1 = bytecode_label(bc); 
+  int label1 = bytecode_label(bc);
   emit_jmp(bc, -1);
   int label2 = bytecode_label(bc);
   scope = make_scope(ctx, formals, scope);
@@ -1914,22 +2051,29 @@ static es_val_t compile_lambda(es_ctx_t* ctx, es_val_t bc, es_val_t formals, es_
   int label3 = bytecode_label(bc);
   int rest;
   int arity = lambda_arity(formals, &rest);
-  es_val_t proc = es_proc_new(ctx, arity, rest, label2, label3);
+  es_val_t proc = es_make_proc(ctx, arity, rest, label2, label3);
   emit_closure(bc, alloc_const(bc, proc));
   es_bytecode_val(bc)->inst[label1].op1 = label3 - label1;
   if (tail_pos) es_emit_inst(bc, next, 0, 0);
   return es_void;
 }
 
-static es_val_t compile_if(es_ctx_t* ctx, es_val_t bc, es_val_t cond, es_val_t bthen, es_val_t belse, int tail_pos, int next, es_val_t scope) {
+static es_val_t compile_if(es_ctx_t* ctx, es_val_t bc, es_val_t exp, int tail_pos, int next, es_val_t scope) {
+  es_val_t cond = es_cadr(exp);
+  es_val_t bthen = es_caddr(exp);
   compile(ctx, bc, cond, 0, 0, scope);
-  int label1 = bytecode_label(bc); 
+  int label1 = bytecode_label(bc);
   emit_bf(bc, -1);
   compile(ctx, bc, bthen, tail_pos, next, scope);
-  int label2 = bytecode_label(bc); 
+  int label2 = bytecode_label(bc);
   if (!tail_pos) emit_jmp(bc, -1);
-  int label3 = bytecode_label(bc); 
-  compile(ctx, bc, belse, tail_pos, next, scope);
+  int label3 = bytecode_label(bc);
+  if (!es_is_nil(es_cdddr(exp))) {
+    es_val_t belse = es_cadddr(exp);
+    compile(ctx, bc, belse, tail_pos, next, scope);
+  } else {
+    emit_const(bc, alloc_const(bc, es_undefined));
+  }
   int label4 = bytecode_label(bc);
   es_bytecode_val(bc)->inst[label1].op1 = label3 - label1;
   if (!tail_pos) es_bytecode_val(bc)->inst[label2].op1 = label4 - label2;
@@ -1939,14 +2083,14 @@ static es_val_t compile_if(es_ctx_t* ctx, es_val_t bc, es_val_t cond, es_val_t b
 static es_val_t compile_define(es_ctx_t* ctx, es_val_t bc, es_val_t binding, es_val_t val, int tail_pos, int next, es_val_t scope) {
   if (es_is_symbol(binding)) {
     compile(ctx, bc, es_car(val), 0, 0, scope);
-    emit_global_set(bc, es_env_reserve_loc(es_ctx_env(ctx), binding, es_defined));
+    emit_global_set(bc, env_reserve_loc(ctx, es_ctx_env(ctx), binding, es_undefined));
     if (tail_pos) es_emit_inst(bc, next, 0, 0);
   } else if (es_is_pair(binding)) {
     es_val_t sym     = es_car(binding);
     es_val_t formals = es_cdr(binding);
     es_val_t body    = val;
     compile_lambda(ctx, bc, formals, body, 0, 0, scope);
-    emit_global_set(bc, es_env_reserve_loc(es_ctx_env(ctx), sym, es_defined));
+    emit_global_set(bc, env_reserve_loc(ctx, es_ctx_env(ctx), sym, es_undefined));
     if (tail_pos) es_emit_inst(bc, next, 0, 0);
   } else {
     return es_make_error(ctx, "invalid define syntax");
@@ -1975,7 +2119,8 @@ static es_val_t compile_args(es_ctx_t* ctx, es_val_t bc, es_val_t args, es_val_t
 //=============
 // VM
 //=============
-#define pop(ctx)             ctx->state.stack[--ctx->state.sp] 
+#define pop(ctx)             ctx->state.stack[--ctx->state.sp]
+#define pop_n(ctx, n)        ctx->state.sp -= n
 #define push(ctx, v)         ctx->state.stack[ctx->state.sp++] = v
 #define get_const(idx)       es_bytecode_val(ctx->bytecode)->cpool[idx]
 #define get_arg(ctx, idx)    es_args_val(ctx->state.args)->args[idx]
@@ -2001,35 +2146,36 @@ static es_val_t compile_args(es_ctx_t* ctx, es_val_t bc, es_val_t args, es_val_t
   #define opcode(o, code)      case o: { code } break;
 #endif
 
-static es_val_t es_vm(es_ctx_t* ctx, int start, es_val_t env) {
-  ctx->state.env  = env;
-  ctx->state.args = es_nil;
-  ctx->state.sp   = 0;
-  ctx->state.fp   = 0;
-
+static es_val_t es_vm_run(es_ctx_t* ctx, int start, es_val_t env) {
 #ifdef LABELS_AS_VALUES
-  static void* opcode_jmp_tbl[] = {
-    &&HALT, &&CONST, &&POP, &&GLOBAL_REF, &&GLOBAL_SET, &&CLOSED_REF, &&CLOSED_SET, 
+  static void* jmp_tbl[] = {
+    &&HALT, &&CONST, &&POP, &&GLOBAL_REF, &&GLOBAL_SET, &&CLOSED_REF, &&CLOSED_SET,
     &&ARG_REF, &&ARG_SET, &&JMP, &&BF, &&CALL, &&TAIL_CALL, &&RETURN, &&CLOSURE
   };
 
-  inst_addrs = opcode_jmp_tbl;
+  inst_addrs = jmp_tbl;
 #endif
 
   if (start == -1) {
     return es_void;
   }
 
-  es_inst_t* inst = es_bytecode_val(ctx->bytecode)->inst;
+  ctx->state.env  = env;
+  ctx->state.args = es_nil;
+  ctx->state.sp   = 0;
+  ctx->state.fp   = 0;
+
+  es_vm_inst_t* inst = es_bytecode_val(ctx->bytecode)->inst;
   ctx->state.ip = inst + start;
 
   while(1) {
     dispatch(inst_op(ctx->state.ip),
       opcode(HALT,
+        assert(ctx->state.sp == 1);
         return pop(ctx);
       )
       opcode(CONST,
-        push(ctx, get_const(inst_op1(ctx->state.ip))); 
+        push(ctx, get_const(inst_op1(ctx->state.ip)));
         ctx->state.ip++;
       )
       opcode(POP,
@@ -2043,12 +2189,12 @@ static es_val_t es_vm(es_ctx_t* ctx, int start, es_val_t env) {
         ctx->state.ip += inst_op1(ctx->state.ip);
       )
       opcode(GLOBAL_REF,
-        push(ctx, es_env_ref(ctx, get_env(ctx), inst_op1(ctx->state.ip))); 
+        push(ctx, env_ref(ctx, get_env(ctx), inst_op1(ctx->state.ip)));
         ctx->state.ip++;
       )
       opcode(GLOBAL_SET,
         es_val_t v = pop(ctx);
-        push(ctx, es_env_set(ctx, get_env(ctx), inst_op1(ctx->state.ip), v)); 
+        push(ctx, env_set(ctx, get_env(ctx), inst_op1(ctx->state.ip), v));
         ctx->state.ip++;
       )
       opcode(CLOSED_REF,
@@ -2062,20 +2208,20 @@ static es_val_t es_vm(es_ctx_t* ctx, int start, es_val_t env) {
       )
       opcode(CLOSED_SET,
         es_val_t   cenv  = get_args(ctx);
-        int        depth = inst_op1(ctx->state.ip); 
+        int        depth = inst_op1(ctx->state.ip);
         int        idx   = inst_op2(ctx->state.ip);
-        while(depth-- > 0) 
+        while(depth-- > 0)
           cenv = es_args_val(cenv)->parent;
         es_args_val(cenv)->args[idx] = pop(ctx);
         push(ctx, es_void);
         ctx->state.ip++;
       )
       opcode(ARG_REF,
-        push(ctx, get_arg(ctx, inst_op1(ctx->state.ip))); 
+        push(ctx, get_arg(ctx, inst_op1(ctx->state.ip)));
         ctx->state.ip++;
       )
       opcode(ARG_SET,
-        set_arg(ctx, inst_op1(ctx->state.ip), pop(ctx)); 
+        set_arg(ctx, inst_op1(ctx->state.ip), pop(ctx));
         ctx->state.ip++;
       )
       opcode(CLOSURE,
@@ -2089,33 +2235,35 @@ static es_val_t es_vm(es_ctx_t* ctx, int start, es_val_t env) {
         int argc = inst_op1(ctx->state.ip);
         ctx->state.ip++;
         es_val_t proc = pop(ctx);
-        if (es_is_fn(proc)) { 
-          es_val_t res = es_fn_apply_argv(ctx, proc, argc, get_stack(ctx) + get_sp(ctx) - argc); 
-          set_sp(ctx, get_sp(ctx) - argc);
+        if (es_is_fn(proc)) {
+          es_val_t res = es_fn_apply_argv(ctx, proc, argc, get_stack(ctx) + get_sp(ctx) - argc);
+          pop_n(ctx, argc);
           push(ctx, res);
         } else if (es_is_closure(proc)) {
           es_closure_t* closure = es_closure_val(proc);
           es_proc_t* proc = es_obj_to(es_proc_t*, closure->proc);
           save(ctx);
-          set_args(ctx, es_args_new(ctx, closure->env, proc->arity, proc->rest, argc, get_stack(ctx) + get_sp(ctx) - argc));
-          set_sp(ctx, get_sp(ctx) - argc);
+          es_val_t args = es_args_new(ctx, closure->env, proc->arity, proc->rest, argc, get_stack(ctx) + get_sp(ctx) - argc);
+          set_args(ctx, args);
+          pop_n(ctx, argc);
           ctx->state.ip = inst + proc->addr;
         }
       )
       opcode(TAIL_CALL,
-        int argc = inst_op1(ctx->state.ip); 
+        int argc = inst_op1(ctx->state.ip);
         ctx->state.ip++;
         es_val_t proc = pop(ctx);
-        if (es_is_fn(proc)) { 
-          es_val_t res = es_fn_apply_argv(ctx, proc, argc, get_stack(ctx) + get_sp(ctx) - argc); 
-          set_sp(ctx, get_sp(ctx) - argc); 
+        if (es_is_fn(proc)) {
+          es_val_t res = es_fn_apply_argv(ctx, proc, argc, get_stack(ctx) + get_sp(ctx) - argc);
+          pop_n(ctx, argc);
           push(ctx, res);
           restore(ctx);
         } else if (es_is_closure(proc)) {
           es_closure_t* closure = es_closure_val(proc);
           es_proc_t* proc = es_obj_to(es_proc_t*, closure->proc);
-          set_args(ctx, es_args_new(ctx, closure->env, proc->arity, proc->rest, argc, get_stack(ctx) + get_sp(ctx) - argc));
-          set_sp(ctx, get_sp(ctx) - argc);
+          es_val_t args = es_args_new(ctx, closure->env, proc->arity, proc->rest, argc, get_stack(ctx) + get_sp(ctx) - argc);
+          set_args(ctx, args);
+          pop_n(ctx, argc);
           ctx->state.ip = inst + proc->addr;
         }
       )
@@ -2139,12 +2287,12 @@ static int
      y->tv_usec += 1000000 * nsec;
      y->tv_sec -= nsec;
    }
- 
+
    /* Compute the time remaining to wait.
       tv_usec is certainly positive. */
    result->tv_sec = x->tv_sec - y->tv_sec;
    result->tv_usec = x->tv_usec - y->tv_usec;
- 
+
    /* Return 1 if result is negative. */
    return x->tv_sec < y->tv_sec;
  }
@@ -2158,7 +2306,7 @@ ES_API int es_compile(es_ctx_t* ctx, es_val_t exp) {
   return start;
 }
 
-ES_API es_val_t es_load(es_ctx_t* ctx, char* file_name) {
+ES_API es_val_t es_load(es_ctx_t* ctx, const char* file_name) {
   es_val_t exp, port;
   port = es_make_port(ctx, fopen(file_name, "r"));
   while(!es_is_eof_obj(exp = es_read(ctx, port))) {
@@ -2173,7 +2321,7 @@ ES_API es_val_t es_eval(es_ctx_t* ctx, es_val_t exp, es_val_t env) {
   es_val_t res;
   int start = es_compile(ctx, exp);
   gettimeofday(&t0, NULL);
-  res = es_vm(ctx, start, es_ctx_env(ctx));
+  res = es_vm_run(ctx, start, es_ctx_env(ctx));
   assert(ctx->state.fp == 0);
   gettimeofday(&t1, NULL);
   timeval_subtract(&dt, &t1, &t0);
@@ -2181,108 +2329,114 @@ ES_API es_val_t es_eval(es_ctx_t* ctx, es_val_t exp, es_val_t env) {
   return res;
 }
 
-static es_val_t fn_bytecode(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return ctx->bytecode; 
+static es_val_t fn_bytecode(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return ctx->bytecode;
 }
 
-static es_val_t fn_env(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_ctx_env(ctx); 
+static es_val_t fn_env(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_ctx_env(ctx);
 }
 
-static es_val_t fn_write(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  es_print(ctx, argv[0], argv[0]); return es_void; 
-}
+static es_val_t fn_write(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  if (argc == 1) {
+    es_print(ctx, argv[0], ctx->oport);
+  } else if (argc == 2) {
+    es_print(ctx, argv[0], argv[1]);
+  }
 
-static es_val_t fn_cons(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_cons(ctx, argv[0], argv[1]); 
-}
-
-static es_val_t fn_car(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_car(argv[0]); 
-}
-
-static es_val_t fn_cdr(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_cdr(argv[0]); 
-}
-
-static es_val_t fn_add(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_number_add(argv[0], argv[1]); 
-}
-
-static es_val_t fn_sub(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_number_sub(argv[0], argv[1]); 
-}
-
-static es_val_t fn_mul(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_number_mul(argv[0], argv[1]); 
-}
-
-static es_val_t fn_div(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_number_div(argv[0], argv[1]); 
-}
-
-static es_val_t fn_is_num_eq(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_make_bool(es_number_is_eq(argv[0], argv[1])); 
-}
-
-static es_val_t fn_is_boolean(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_make_bool(es_is_boolean(argv[0])); 
-}
-
-static es_val_t fn_is_symbol(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_make_bool(es_is_symbol(argv[0])); 
-}
-
-static es_val_t fn_is_char(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_make_bool(es_is_char(argv[0])); 
-}
-
-static es_val_t fn_is_vec(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_make_bool(es_is_vec(argv[0])); 
-}
-
-static es_val_t fn_is_procedure(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_make_bool(es_is_fn(argv[0]) || es_is_closure(argv[0])); 
-}
-
-static es_val_t fn_is_pair(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_make_bool(es_is_pair(argv[0])); 
-}
-
-static es_val_t fn_is_number(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_make_bool(es_is_fixnum(argv[0])); 
-}
-
-static es_val_t fn_is_string(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_make_bool(es_is_string(argv[0])); 
-}
-
-static es_val_t fn_is_port(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_make_bool(es_is_port(argv[0])); 
-}
-
-static es_val_t fn_is_null(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_make_bool(es_is_nil(argv[0])); 
-}
-
-static es_val_t fn_is_eq(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_make_bool(es_is_eq(argv[0], argv[1])); 
-}
-
-static es_val_t fn_quit(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  return es_eof_obj; 
-}
-
-static es_val_t fn_gc(es_ctx_t* ctx, int argc, es_val_t* argv) { 
-  es_gc(ctx); 
   return es_void;
 }
 
-static es_val_t fn_read_char(es_ctx_t* ctx, int argc, es_val_t* argv) {
+static es_val_t fn_cons(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_cons(ctx, argv[0], argv[1]);
+}
+
+static es_val_t fn_car(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_car(argv[0]);
+}
+
+static es_val_t fn_cdr(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_cdr(argv[0]);
+}
+
+static es_val_t fn_add(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_number_add(argv[0], argv[1]);
+}
+
+static es_val_t fn_sub(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_number_sub(argv[0], argv[1]);
+}
+
+static es_val_t fn_mul(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_number_mul(argv[0], argv[1]);
+}
+
+static es_val_t fn_div(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_number_div(argv[0], argv[1]);
+}
+
+static es_val_t fn_is_num_eq(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_make_bool(es_number_is_eq(argv[0], argv[1]));
+}
+
+static es_val_t fn_is_boolean(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_make_bool(es_is_boolean(argv[0]));
+}
+
+static es_val_t fn_is_symbol(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_make_bool(es_is_symbol(argv[0]));
+}
+
+static es_val_t fn_is_char(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_make_bool(es_is_char(argv[0]));
+}
+
+static es_val_t fn_is_vec(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_make_bool(es_is_vec(argv[0]));
+}
+
+static es_val_t fn_is_procedure(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_make_bool(es_is_fn(argv[0]) || es_is_closure(argv[0]) || es_is_continuation(argv[0]));
+}
+
+static es_val_t fn_is_pair(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_make_bool(es_is_pair(argv[0]));
+}
+
+static es_val_t fn_is_number(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_make_bool(es_is_fixnum(argv[0]));
+}
+
+static es_val_t fn_is_string(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_make_bool(es_is_string(argv[0]));
+}
+
+static es_val_t fn_is_port(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_make_bool(es_is_port(argv[0]));
+}
+
+static es_val_t fn_is_null(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_make_bool(es_is_nil(argv[0]));
+}
+
+static es_val_t fn_is_eq(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_make_bool(es_is_eq(argv[0], argv[1]));
+}
+
+static es_val_t fn_quit(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_eof_obj;
+}
+
+static es_val_t fn_gc(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  es_gc(ctx);
+  return es_void;
+}
+
+static es_val_t fn_read_char(es_ctx_t* ctx, int argc, es_val_t argv[]) {
   return es_port_read_char(argc == 0 ? ctx->iport : argv[0]);
 }
 
-static es_val_t fn_close(es_ctx_t* ctx, int argc, es_val_t* argv) {
+static es_val_t fn_close(es_ctx_t* ctx, int argc, es_val_t argv[]) {
   es_port_t* port = es_port_val(argv[0]);
   fclose(port->stream);
   port->stream = NULL;
@@ -2297,7 +2451,26 @@ static es_val_t fn_compile(es_ctx_t* ctx, int argc, es_val_t argv[]) {
 }
 
 static es_val_t fn_apply(es_ctx_t* ctx, int argc, es_val_t argv[]) {
-  return es_nil;
+  es_val_t proc = argv[0];
+  es_val_t args = argv[1];
+
+  es_val_t b = ctx->bytecode;
+  int start = bytecode_label(b);
+  emit_pop(b);
+
+  int nargs = 0;
+  while (!es_is_nil(args)) {
+    emit_const(b, alloc_const(b, es_car(args)));
+    args = es_cdr(args);
+    nargs++;
+  }
+
+  emit_const(b, alloc_const(b, proc));
+  emit_tail_call(b, nargs);
+  save(ctx);
+  ctx->state.ip = es_bytecode_val(b)->inst + start;
+
+  return es_void;
 }
 
 static es_val_t fn_eval(es_ctx_t* ctx, int argc, es_val_t argv[]) {
@@ -2333,62 +2506,89 @@ static es_val_t fn_mem_stats(es_ctx_t* ctx, int argc, es_val_t argv[]) {
   return es_void;
 }
 
+static es_val_t fn_current_input_port(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return ctx->iport;
+}
+
+static es_val_t fn_current_output_port(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return ctx->oport;
+}
+
+static es_val_t fn_get_proc(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_closure_val(argv[0])->proc;
+}
+
+static es_val_t fn_call_cc(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  es_val_t proc = argv[0];
+  es_val_t k    = es_make_continuation(ctx);
+  return es_void;
+}
+
+static es_val_t fn_make_byte_vec(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_make_byte_vec(ctx, es_fixnum_val(argv[0]));
+}
+
+static es_val_t fn_is_byte_vec(es_ctx_t* ctx, int argc, es_val_t argv[]) {
+  return es_make_bool(es_is_byte_vec(argv[0]));
+}
+
 static void ctx_init_env(es_ctx_t* ctx) {
-  es_define_fn(ctx, "mem-stats",   fn_mem_stats,    0);
-  es_define_fn(ctx, "bytecode",    fn_bytecode,     0);
-  es_define_fn(ctx, "global-env",  fn_env,          0);
-  es_define_fn(ctx, "cons",        fn_cons,         2);
-  es_define_fn(ctx, "car",         fn_car,          1);
-  es_define_fn(ctx, "cdr",         fn_cdr,          1);
-  es_define_fn(ctx, "+",           fn_add,          2);
-  es_define_fn(ctx, "-",           fn_sub,          2);
-  es_define_fn(ctx, "*",           fn_mul,          2);
-  es_define_fn(ctx, "/",           fn_div,          2);
-  es_define_fn(ctx, "compile",     fn_compile,      1);
-  es_define_fn(ctx, "boolean?",    fn_is_boolean,   1);
-  es_define_fn(ctx, "symbol?",     fn_is_symbol,    1);
-  es_define_fn(ctx, "char?",       fn_is_char,      1);
-  es_define_fn(ctx, "vector?",     fn_is_vec,       1);
-  es_define_fn(ctx, "procedure?",  fn_is_procedure, 1);
-  es_define_fn(ctx, "pair?",       fn_is_pair,      1);
-  es_define_fn(ctx, "number?",     fn_is_number,    1);
-  es_define_fn(ctx, "string?",     fn_is_string,    1);
-  es_define_fn(ctx, "port?",       fn_is_port,      1);
-  es_define_fn(ctx, "null?",       fn_is_null,      2);
-  es_define_fn(ctx, "=",           fn_is_num_eq,    2);
-  es_define_fn(ctx, "eq?",         fn_is_eq,        2);
-  es_define_fn(ctx, "quit",        fn_quit,         2);
-  es_define_fn(ctx, "gc",          fn_gc,           0);
-  es_define_fn(ctx, "write",       fn_write,        2);
-  es_define_fn(ctx, "read-char",   fn_read_char,    2);
-  es_define_fn(ctx, "close",       fn_close,        1);
-  es_define_fn(ctx, "eval",        fn_eval,         1);
-  es_define_fn(ctx, "vector-ref",  fn_vec_ref,      2);
-  es_define_fn(ctx, "make-string", fn_make_string,  2);
-  es_define_fn(ctx, "string-ref",  fn_string_ref,   2);
+  es_define_fn(ctx, "mem-stats",           fn_mem_stats,           0);
+  es_define_fn(ctx, "bytecode",            fn_bytecode,            0);
+  es_define_fn(ctx, "global-env",          fn_env,                 0);
+  es_define_fn(ctx, "cons",                fn_cons,                2);
+  es_define_fn(ctx, "car",                 fn_car,                 1);
+  es_define_fn(ctx, "cdr",                 fn_cdr,                 1);
+  es_define_fn(ctx, "+",                   fn_add,                 2);
+  es_define_fn(ctx, "-",                   fn_sub,                 2);
+  es_define_fn(ctx, "*",                   fn_mul,                 2);
+  es_define_fn(ctx, "/",                   fn_div,                 2);
+  es_define_fn(ctx, "call/cc",             fn_call_cc,             1);
+  es_define_fn(ctx, "compile",             fn_compile,             1);
+  es_define_fn(ctx, "boolean?",            fn_is_boolean,          1);
+  es_define_fn(ctx, "symbol?",             fn_is_symbol,           1);
+  es_define_fn(ctx, "char?",               fn_is_char,             1);
+  es_define_fn(ctx, "vector?",             fn_is_vec,              1);
+  es_define_fn(ctx, "make-byte-vector",    fn_make_byte_vec,       1);
+  es_define_fn(ctx, "byte-vector?",        fn_is_byte_vec,         1);
+  es_define_fn(ctx, "procedure?",          fn_is_procedure,        1);
+  es_define_fn(ctx, "pair?",               fn_is_pair,             1);
+  es_define_fn(ctx, "number?",             fn_is_number,           1);
+  es_define_fn(ctx, "string?",             fn_is_string,           1);
+  es_define_fn(ctx, "port?",               fn_is_port,             1);
+  es_define_fn(ctx, "null?",               fn_is_null,             2);
+  es_define_fn(ctx, "=",                   fn_is_num_eq,           2);
+  es_define_fn(ctx, "eq?",                 fn_is_eq,               2);
+  es_define_fn(ctx, "quit",                fn_quit,                2);
+  es_define_fn(ctx, "gc",                  fn_gc,                  0);
+  es_define_fn(ctx, "write",               fn_write,               2);
+  es_define_fn(ctx, "read-char",           fn_read_char,           2);
+  es_define_fn(ctx, "close",               fn_close,               1);
+  es_define_fn(ctx, "eval",                fn_eval,                1);
+  es_define_fn(ctx, "apply",               fn_apply,               2);
+  es_define_fn(ctx, "vector-ref",          fn_vec_ref,             2);
+  es_define_fn(ctx, "make-string",         fn_make_string,         2);
+  es_define_fn(ctx, "string-ref",          fn_string_ref,          2);
+  es_define_fn(ctx, "current-input-port",  fn_current_input_port,  0);
+  es_define_fn(ctx, "current-output-port", fn_current_output_port, 0);
+  es_define_fn(ctx, "get-proc",            fn_get_proc,            1);
 
   es_load(ctx, "scm/init.scm");
 }
-
-#ifdef ENABLE_LIBUV
-  #include <uv.h>
-
-
-#endif
 
 #ifdef ENABLE_REPL
 
 enum { MB = 1000000 };
 
 int main() {
-  es_ctx_t* ctx = es_ctx_new(64 * MB);
+  es_ctx_t* ctx = es_ctx_new(32 * MB);
 
   es_ctx_set_iport(ctx, es_make_port(ctx, stdin));
   es_ctx_set_oport(ctx, es_make_port(ctx, stdout));
 
   es_port_printf(ctx, es_ctx_oport(ctx), "[eva v%s]\n", es_version_str);
 
-  es_val_t val = es_unbound;
+  es_val_t val = es_undefined;
 
   es_gc(ctx);
 
@@ -2398,7 +2598,7 @@ int main() {
     val = es_eval(ctx, val, es_ctx_env(ctx));
     es_print(ctx, val, es_ctx_oport(ctx));
     es_port_printf(ctx, es_ctx_oport(ctx), "\n");
-    es_gc(ctx);  
+    es_gc(ctx);
   } while (!es_is_eof_obj(val));
 
   es_ctx_free(ctx);

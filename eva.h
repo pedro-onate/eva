@@ -1,13 +1,13 @@
-/**
+/*
  * eva.h
  *
  * Copyright (C) 2014 Pedro Oñate
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to 
+ * of this software and associated documentation files (the "Software"), to
  * deal in the Software without restriction, including without limitation the
  * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- * sell copies of the Software, and to permit persons to whom the Software is 
+ * sell copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
@@ -15,9 +15,9 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN 
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
 
@@ -33,26 +33,12 @@
 
 #define es_version_str "0.3.0"
 
-typedef struct es_ctx     es_ctx_t;
-typedef enum   es_type    es_type_t;
-typedef uintptr_t         es_val_t;
-typedef struct es_obj     es_obj_t;
-typedef struct es_pair    es_pair_t;
-typedef struct es_string  es_string_t;
-typedef struct es_fn      es_fn_t;
-typedef struct es_closure es_closure_t;
-typedef struct es_vec     es_vec_t;
-typedef struct es_proc    es_proc_t;
-typedef struct es_port    es_port_t;
-typedef struct es_error   es_error_t;
-typedef struct es_env     es_env_t;
-typedef struct es_args    es_args_t;
+typedef struct es_ctx  es_ctx_t;
+typedef enum   es_type es_type_t;
+typedef uintptr_t      es_val_t;
 
-
-/*
- * Function pointer for native c functions
- */
-typedef es_val_t (*es_pfn_t)(es_ctx_t* ctx, int argc, es_val_t* argv);
+/* Function pointer for native c functions */
+typedef es_val_t (*es_pfn_t)(es_ctx_t* ctx, int argc, es_val_t argv[]);
 
 enum es_type {
   es_invalid_type = -1, /**< Invalid type. */
@@ -66,16 +52,17 @@ enum es_type {
   es_eof_obj_type,      /**< Type of the EOF object */
   es_closure_type,      /**< Type of closures. */
   es_unbound_type,      /**< Type of unbound locations */
-  es_defined_type,      /**< Type of undefined symbols. */
   es_undefined_type,    /**< Type of the undefined value */
   es_void_type,         /**< Unspecified type. */
   es_port_type,         /**< Type of port objects. */
   es_vector_type,       /**< Vector type. */
+  es_byte_vector_type,
   es_fn_type,           /**< Type of native procedures */
   es_env_type,          /**< Type of top-level environments */
   es_args_type,         /**< Type of procedure arguments */
   es_proc_type,         /**< Type of compiled procedures */
   es_bytecode_type,     /**< Type of bytecode */
+  es_continuation_type,
   es_error_type         /**< Type of errors */
 };
 
@@ -85,7 +72,6 @@ extern const es_val_t es_false;
 extern const es_val_t es_eof_obj;
 extern const es_val_t es_void;
 extern const es_val_t es_unbound;
-extern const es_val_t es_defined;
 extern const es_val_t es_undefined;
 
 /**
@@ -110,7 +96,7 @@ void          es_ctx_free(es_ctx_t* ctx);
  * @param ctx A context
  * @return    The default input port
  */
-es_val_t      es_ctx_iport(es_ctx_t* ctx);
+es_val_t      es_ctx_iport(const es_ctx_t* ctx);
 
 /**
  * Returns the default output port
@@ -118,7 +104,7 @@ es_val_t      es_ctx_iport(es_ctx_t* ctx);
  * @param ctx The context
  * @return    The default output port
  */
-es_val_t      es_ctx_oport(es_ctx_t* ctx);
+es_val_t      es_ctx_oport(const es_ctx_t* ctx);
 
 /**
  * Returns the global environment
@@ -297,6 +283,8 @@ int           es_is_fn(es_val_t val);
  */
 int           es_is_proc(es_val_t val);
 
+int           es_is_continuation(es_val_t val);
+
 /**
  * Checks if value is a bytecode object
  *
@@ -352,62 +340,6 @@ int           es_char_val(es_val_t val);
  * @return    True if value is unbound
  */
 int           es_symbol_val(es_val_t val);
-
-/**
- * Converts a value to a string
- *
- * @param val A value
- * @return    True if value is unbound
- */
-es_string_t*  es_string_val(es_val_t val);
-
-/**
- * Converts a value to a pair
- *
- * @param val A value
- * @return    True if value is unbound
- */
-es_pair_t*    es_pair_val(es_val_t val);
-
-/**
- * Converts a value to a vector
- *
- * @param val A value
- * @return    True if value is unbound
- */
-es_vec_t*     es_vector_val(es_val_t val);
-
-/**
- * Converts value to a closure
- *
- * @param val A value
- * @return    True if value is unbound
- */
-es_closure_t* es_closure_val(es_val_t val);
-
-/**
- * Converts value to a port
- *
- * @param val A value
- * @return    True if value is unbound
- */
-es_port_t*    es_port_val(es_val_t val);
-
-/**
- * Converts value to an error
- *
- * @param val A value
- * @return    An error object
- */
-es_error_t*   es_error_val(es_val_t val);
-
-/**
- * Converts value to an environment
- *
- * @param val A value
- * @return    True if value is unbound
- */
-es_env_t*     es_env_val(es_val_t val);
 
 /**
  * Makes a fixed precision integer
@@ -487,6 +419,10 @@ es_val_t      es_make_vec(es_ctx_t* ctx, int size);
  */
 es_val_t      es_make_vec_from_list(es_ctx_t* ctx, es_val_t list);
 
+es_val_t      es_make_byte_vec(es_ctx_t* ctx, size_t size);
+es_val_t      es_byte_vec_ref(es_val_t vec, size_t k);
+void          es_byte_vec_set(es_val_t vec, size_t k, char val);
+
 /**
  * Makes a closure
  *
@@ -530,6 +466,8 @@ es_val_t      es_make_error(es_ctx_t* ctx, char* msg);
  * @return   A symbol
  */
 es_val_t      es_make_symbol(int id);
+
+es_val_t      es_make_continuation(es_ctx_t* ctx);
 
 /**
  * Makes an environment
@@ -600,8 +538,6 @@ void          es_print(es_ctx_t* ctx, es_val_t exp, es_val_t port);
 es_val_t      es_define(es_ctx_t* ctx, char* name, es_val_t value);
 es_val_t      es_define_fn(es_ctx_t* ctx, char* name, es_pfn_t fn, int arity);
 es_val_t      es_define_symbol(es_ctx_t* ctx, es_val_t env, es_val_t symbol, es_val_t value);
-es_val_t      es_lookup_symbol(es_ctx_t* ctx, es_val_t env, es_val_t symbol);
-
 
 /**
  * Evaluates an expression
@@ -612,7 +548,7 @@ es_val_t      es_lookup_symbol(es_ctx_t* ctx, es_val_t env, es_val_t symbol);
  * @return     The result of evaluating the expression
  */
 es_val_t      es_eval(es_ctx_t* ctx, es_val_t exp, es_val_t env);
-es_val_t      es_load(es_ctx_t* ctx, char* file);
+es_val_t      es_load(es_ctx_t* ctx, const char* file);
 
 /**
  * Runs the garbage collector
@@ -622,7 +558,7 @@ es_val_t      es_load(es_ctx_t* ctx, char* file);
 void          es_gc(es_ctx_t* ctx);
 void          es_gc_root_p(es_ctx_t* ctx, es_val_t* pv);
 void          es_gc_unroot(es_ctx_t* ctx, int n);
-#define       es_gc_root(c, v) es_gc_root_p(c, &(v))
+#define       es_gc_root(c, v) es_gc_root_p(c, (es_val_t*)&(v))
 
 #define es_cons(ctx, a, b)    es_make_pair(ctx, a, b)
 #define es_car(e)             es_pair_car(e)
