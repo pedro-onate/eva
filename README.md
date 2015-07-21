@@ -39,17 +39,17 @@ const size_t HEAP_SIZE = 64 * 1000000;
 
 int main(int argc, char** argv)
 {
-    /* Create an Eva runtime with heap size of 64 MB */
-    es_ctx_t* ctx = es_make_ctx(HEAP_SIZE);
-
-    /* This wraps our factorial function into an Eva object */
-    es_val_t fn = es_make_fn(ctx, 1, fn_factorial);
+    /* Create an Eva runtime context with heap size of 64 MB */
+    es_ctx_t* ctx = es_ctx_new(HEAP_SIZE);
 
     /* Register our factorial function with the eva runtime */
-    es_define(ctx, "factorial", fn);
+    es_define_fn(ctx, "factorial", fn_factorial, 1);
 
     /* load and evaluate external scheme file */
     es_load(ctx, "example.scm");
+
+    /* Release context */
+    es_ctx_free(ctx);
 }
 ```
 example.scm

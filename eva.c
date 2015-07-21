@@ -284,7 +284,6 @@ static es_obj_t*      obj_reloc(es_val_t obj);
 static void           obj_init(es_val_t obj, es_type_t type);
 static void           es_mark_copy(es_heap_t* heap, es_val_t* pval, char** next);
 static int            es_obj_is_reloc(es_val_t val);
-static void*          align(void* bc, int align) { return (void*)((((uintptr_t)bc / align) + 1) * align); }
 static void*          heap_alloc(es_heap_t* heap, size_t size);
 static void           heap_init(es_heap_t* heap, size_t size);
 static void           symtab_init(es_symtab_t* symtab);
@@ -411,25 +410,26 @@ static long ceil_to(long n, long u)
   return ((n + u - 1) / u) * u;
 }
 
+#define align(v, n) ((v + n - 1) & ~(n - 1))
+#define alignp(p, n) ((void*)align((uintptr_t)p, (uintptr_t)n))
+
 static void* heap_alloc(es_heap_t* heap, size_t size)
 {
-  void* mem;
-  heap->next = align(heap->next, ES_DEFAULT_ALIGNMENT);
-  if (size > (heap->end - heap->next)) {
+  char* mem = alignp(heap->next, ES_DEFAULT_ALIGNMENT);
+  if (size > (heap->end - mem)) {
     return NULL;
   }
-  mem = heap->next;
-  heap->next += size;
+  heap->next = mem + size;
   return mem;
 }
 
 static void heap_init(es_heap_t* heap, size_t size)
 {
   heap->requested  = size;
-  heap->size       = ceil_to((size + 1) / 2, ES_DEFAULT_ALIGNMENT);
+  heap->size       = align((size + 1) / 2, ES_DEFAULT_ALIGNMENT);
   heap->buffer     = malloc(heap->size * 2);
-  heap->from_space = align(heap->buffer, ES_DEFAULT_ALIGNMENT);
-  heap->to_space   = align(heap->from_space + heap->size, ES_DEFAULT_ALIGNMENT);
+  heap->from_space = alignp(heap->buffer, ES_DEFAULT_ALIGNMENT);
+  heap->to_space   = alignp(heap->from_space + heap->size, ES_DEFAULT_ALIGNMENT);
   heap->next       = heap->from_space;
   heap->end        = heap->from_space + size;
   heap->to_end     = heap->to_space + size;
@@ -445,7 +445,7 @@ void es_mark_copy(es_heap_t* heap, es_val_t* ref, char** next)
     *ref = es_obj_to_val(es_val_to_obj(*ref)->reloc); // Update stale reference to relocated object
   } else {
     size_t size = es_size_of(*ref);                // Get size of object
-    *next = align(*next, ES_DEFAULT_ALIGNMENT); // Ensure next pointer is aligned
+    *next = alignp(*next, ES_DEFAULT_ALIGNMENT); // Ensure next pointer is aligned
     memcpy(*next, (void*)*ref, size);                 // Copy object from_space from_space-space into to_space-space
     es_val_to_obj(*ref)->reloc = (es_obj_t*)*next;            // Leave forwarding pointer in old from_space-space object
     *ref = es_obj_to_val(es_val_to_obj(*ref)->reloc);                    // Update current reference to_space point to_space new object in to_space-space
@@ -1716,7 +1716,7 @@ size_t es_size_of(es_val_t val)
   case ES_UNDEFINED_TYPE:
   case ES_VOID_TYPE:
   case ES_CONT_TYPE:
-  return sizeof(es_val_t);
+    return sizeof(es_val_t);
   }
 }
 
@@ -1761,7 +1761,7 @@ void es_gc(es_ctx_t* ctx)
     case ES_MACRO_TYPE:     es_macro_mark_copy(heap, obj, &next);    break;
     default:                                                         break;
     }
-    scan = align(scan + es_size_of(obj), ES_DEFAULT_ALIGNMENT);
+    scan = alignp(scan + es_size_of(obj), ES_DEFAULT_ALIGNMENT);
   }
 
   tmp              = heap->from_space;
@@ -2568,7 +2568,7 @@ es_val_t es_load(es_ctx_t* ctx, const char* file_name)
   port = es_make_port(ctx, fopen(file_name, "r"));
   es_ctx_set_oport(ctx, es_make_port(ctx, stdout));
   while(!es_is_eof_obj(exp = es_port_read(ctx, port))) {
-    es_eval(ctx, exp, es_ctx_env(ctx));
+    es_eval(ctx, exp);
   }
   es_port_close(port);
   return es_void;
@@ -2610,27 +2610,29 @@ es_val_t es_macro_expand(es_ctx_t* ctx, es_val_t exp, es_val_t env)
   }
 }
 
-es_val_t es_eval(es_ctx_t* ctx, es_val_t exp, es_val_t env)
+es_val_t es_eval(es_ctx_t* ctx, es_val_t exp)
 {
   struct timeval t0, t1, dt;
 
-  es_val_t res;
+  es_val_t env, res;
+
+  env = es_ctx_env(ctx);
 
   exp = es_macro_expand(ctx, exp, env);
 
-  //es_printf(ctx, "expanded: %@\n", exp);
+  es_printf(ctx, "expanded: %@\n", exp);
 
   es_val_t proc = es_compile(ctx, exp);
 
-  //gettimeofday(&t0, NULL);
+  gettimeofday(&t0, NULL);
 
   res = (es_val_t)es_vm_run(ctx, ES_VM_DISPATCH, proc);
 
   assert(ctx->fp == 0);
 
-  //gettimeofday(&t1, NULL);
-  //timeval_subtract(&dt, &t1, &t0);
-  //printf("time: %f\n", dt.tv_sec * 1000.0 + dt.tv_usec / 1000.0);
+  gettimeofday(&t1, NULL);
+  timeval_subtract(&dt, &t1, &t0);
+  printf("time: %f\n", dt.tv_sec * 1000.0 + dt.tv_usec / 1000.0);
 
   return res;
 }
@@ -2842,14 +2844,6 @@ static es_val_t fn_eval(es_ctx_t* ctx, int argc, es_val_t argv[])
 
 static es_val_t fn_vec_ref(es_ctx_t* ctx, int argc, es_val_t argv[])
 {
-  if (!es_is_vector(argv[0])) {
-    return es_make_error(ctx, "Invalid argument: expected vector, got something else");
-  }
-
-  if (!es_is_fixnum(argv[1])) {
-    return es_make_error(ctx, "Invalid argument: expected integer, got something else");
-  }
-
   es_val_t vec = argv[0];
   int idx      = es_fixnum_val(argv[1]);
   return es_vector_ref(vec, idx);
@@ -2979,8 +2973,7 @@ enum { MB = 1000000 };
 
 int main()
 {
-  //es_ctx_t* ctx = es_ctx_new(64 * MB);
-  es_ctx_t* ctx = es_ctx_new(32 * MB);
+  es_ctx_t* ctx = es_ctx_new(64 * MB);
 
   es_ctx_set_iport(ctx, es_make_port(ctx, stdin));
   es_ctx_set_oport(ctx, es_make_port(ctx, stdout));
@@ -2996,7 +2989,7 @@ int main()
   do {
     es_printf(ctx, "eva> ");
     val = es_read(ctx);
-    val = es_eval(ctx, val, es_ctx_env(ctx));
+    val = es_eval(ctx, val);
     es_printf(ctx, "%@\n", val);
     es_gc(ctx);
   } while (!es_is_eof_obj(val));

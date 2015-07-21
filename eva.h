@@ -33,9 +33,9 @@
 
 #define ES_VERSION_STR "0.3.1"
 
-typedef struct es_ctx  es_ctx_t;
-typedef enum es_type   es_type_t;
-typedef uintptr_t      es_val_t;
+typedef struct es_ctx es_ctx_t;
+typedef enum es_type  es_type_t;
+typedef uintptr_t     es_val_t;
 
 /* Function pointer for native c functions */
 typedef es_val_t (*es_pfn_t)(es_ctx_t* ctx, int argc, es_val_t argv[]);
@@ -202,7 +202,8 @@ es_val_t  es_lookup_symbol(es_ctx_t* ctx, es_val_t env, es_val_t sym);
 //=====================
 // Evaluation
 //=====================
-es_val_t  es_eval(es_ctx_t* ctx, es_val_t exp, es_val_t env);
+es_val_t  es_eval(es_ctx_t* ctx, es_val_t exp);
+es_val_t  es_eval_str(es_ctx_t* ctx, const char* cstr);
 es_val_t  es_apply(es_ctx_t* ctx, es_val_t proc, es_val_t args);
 es_val_t  es_load(es_ctx_t* ctx, const char* file_name);
 
