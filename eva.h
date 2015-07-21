@@ -99,7 +99,7 @@ es_val_t  es_make_char(int charcode);
 es_val_t  es_make_char_cstr(char* cstr);
 es_val_t  es_make_string(es_ctx_t* ctx, char* cstr);
 es_val_t  es_make_pair(es_ctx_t* ctx, es_val_t head, es_val_t tail);
-es_val_t  es_make_list(es_ctx_t* ctx, ...);
+es_val_t  es_make_list(es_ctx_t* ctx, ... /* terminate w/ NULL */);
 es_val_t  es_make_vec(es_ctx_t* ctx, int size);
 es_val_t  es_make_vec_from_list(es_ctx_t* ctx, es_val_t list);
 es_val_t  es_make_closure(es_ctx_t* ctx, es_val_t env, es_val_t proc);
@@ -203,7 +203,6 @@ es_val_t  es_lookup_symbol(es_ctx_t* ctx, es_val_t env, es_val_t sym);
 // Evaluation
 //=====================
 es_val_t  es_eval(es_ctx_t* ctx, es_val_t exp);
-es_val_t  es_eval_str(es_ctx_t* ctx, const char* cstr);
 es_val_t  es_apply(es_ctx_t* ctx, es_val_t proc, es_val_t args);
 es_val_t  es_load(es_ctx_t* ctx, const char* file_name);
 

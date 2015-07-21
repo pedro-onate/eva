@@ -41,6 +41,9 @@
 #define gc_root4(ctx, a, b, c, d) gc_root(ctx, a); gc_root3(ctx, b, c, d)
 #define gc_unroot(ctx, n)         ctx->roots.top -= n
 
+#define align(v, n)  (((v) + n - 1) & ~((n) - 1))
+#define alignp(p, n) ((void*)align((uintptr_t)p, (uintptr_t)n))
+
 typedef enum es_tag {
   ES_OBJ_TAG    = 0x0, /**< b000 - Heap allocated object */
   ES_FIXNUM_TAG = 0x1, /**< b001 - Fixnums */
@@ -386,11 +389,16 @@ void es_ctx_set_env(es_ctx_t* ctx, es_val_t env)
 
 static void* es_alloc(es_ctx_t* ctx, es_type_t type, size_t size)
 {
-  void* mem;
-  while(!(mem = heap_alloc(&ctx->heap, size))) {
-    //printf("out of memory\n");
+  void* mem = heap_alloc(&ctx->heap, size);
+
+  if (!mem) {
     es_gc(ctx);
+    mem = heap_alloc(&ctx->heap, size);
+    if (!mem) {
+      exit(1);
+    }
   }
+
   obj_init(es_obj_to_val(mem), type);
   return mem;
 }
@@ -404,14 +412,6 @@ void es_gc_unroot(es_ctx_t* ctx, int n)
 {
   gc_unroot(ctx, n);
 }
-
-static long ceil_to(long n, long u)
-{
-  return ((n + u - 1) / u) * u;
-}
-
-#define align(v, n) ((v + n - 1) & ~(n - 1))
-#define alignp(p, n) ((void*)align((uintptr_t)p, (uintptr_t)n))
 
 static void* heap_alloc(es_heap_t* heap, size_t size)
 {
@@ -1785,10 +1785,10 @@ es_val_t es_make_list(es_ctx_t* ctx, ...)
   va_list argp;
   va_start(argp, ctx);
   e = va_arg(argp, es_val_t);
-  if (es_is_void(e))
+  if (es_val_to_obj(e) == NULL)
     return es_nil;
   tail = list = es_cons(ctx, e, es_nil);
-  while(!es_is_void(e = va_arg(argp, es_val_t))) {
+  while(es_val_to_obj(e = va_arg(argp, es_val_t)) != NULL) {
     es_set_cdr(tail, es_cons(ctx, e, es_nil));
     tail = es_cdr(tail);
   }
@@ -2008,13 +2008,13 @@ static es_val_t es_parse(es_ctx_t* ctx, es_val_t port)
   case tk_char:
     return es_make_char_cstr(buf);
   case tk_quot:
-    return es_make_list(ctx, symbol_quote, es_parse(ctx, port), es_void);
+    return es_make_list(ctx, symbol_quote, es_parse(ctx, port), NULL);
   case tk_qquot:
-    return es_make_list(ctx, symbol_quasiquote, es_parse(ctx, port), es_void);
+    return es_make_list(ctx, symbol_quasiquote, es_parse(ctx, port), NULL);
   case tk_unquot:
-    return es_make_list(ctx, symbol_unquote, es_parse(ctx, port), es_void);
+    return es_make_list(ctx, symbol_unquote, es_parse(ctx, port), NULL);
   case tk_unquot_splice:
-    return es_make_list(ctx, symbol_unquotesplicing, es_parse(ctx, port), es_void);
+    return es_make_list(ctx, symbol_unquotesplicing, es_parse(ctx, port), NULL);
   case tk_hlpar: {
       es_val_t lst = es_nil;
       while(peek(port, buf) != tk_rpar) {
