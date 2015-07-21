@@ -2620,7 +2620,7 @@ es_val_t es_eval(es_ctx_t* ctx, es_val_t exp)
 
   exp = es_macro_expand(ctx, exp, env);
 
-  es_printf(ctx, "expanded: %@\n", exp);
+  //es_printf(ctx, "expanded: %@\n", exp);
 
   es_val_t proc = es_compile(ctx, exp);
 
