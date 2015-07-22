@@ -2632,7 +2632,7 @@ es_val_t es_eval(es_ctx_t* ctx, es_val_t exp)
 
   gettimeofday(&t1, NULL);
   timeval_subtract(&dt, &t1, &t0);
-  printf("time: %f\n", dt.tv_sec * 1000.0 + dt.tv_usec / 1000.0);
+  //printf("time: %f\n", dt.tv_sec * 1000.0 + dt.tv_usec / 1000.0);
 
   return res;
 }
